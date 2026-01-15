@@ -17,6 +17,7 @@ STATIC_DIR = ROOT / "web"
 
 PERSONA_DIR = ROOT / "data/personas"
 BASE_CONFIGS: Dict[str, Dict[str, Path]] = {
+    "app_config": {"label": "应用配置", "path": ROOT / "data/app_config.json"},
     "llm_config": {"label": "LLM 配置", "path": ROOT / "data/llm_config.json"},
     "knowledge_graph": {
         "label": "知识树",

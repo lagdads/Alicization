@@ -27,12 +27,8 @@
       "command": "python",
       "args": [
         "main.py",
-        "--knowledge-path",
-        "${input:knowledgePath}",
-        "--llm-config-path",
-        "${input:llmConfigPath}",
-        "--persona-path",
-        "${input:personaPath}",
+        "--app-config-path",
+        "${input:appConfigPath}",
         "--run-seconds",
         "${input:runSeconds}"
       ],
@@ -58,6 +54,8 @@
       "args": [
         "main.py",
         "--webui",
+        "--app-config-path",
+        "${input:appConfigPath}",
         "--webui-host",
         "${input:webuiHost}",
         "--webui-port",
@@ -71,22 +69,10 @@
   ],
   "inputs": [
     {
-      "id": "knowledgePath",
+      "id": "appConfigPath",
       "type": "promptString",
-      "description": "Path to knowledge graph JSON",
-      "default": "data/knowledge_graph.json"
-    },
-    {
-      "id": "llmConfigPath",
-      "type": "promptString",
-      "description": "Path to LLM config JSON",
-      "default": "data/llm_config.json"
-    },
-    {
-      "id": "personaPath",
-      "type": "promptString",
-      "description": "Path to persona JSON",
-      "default": "data/personas/default.json"
+      "description": "Path to app config JSON",
+      "default": "data/app_config.json"
     },
     {
       "id": "runSeconds",

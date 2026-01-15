@@ -32,6 +32,7 @@ DEFAULT_ACTIONS = [
     Action("explore_ruins", {}, {"has_map": True}, cost=1.5),
 ]
 MEMORY_DIR = Path("data/memory")
+DEFAULT_APP_CONFIG_PATH = "data/app_config.json"
 
 HELP_TEXT = """命令帮助:
   /help                      显示帮助
@@ -150,6 +151,14 @@ def _load_json(path: str) -> Dict[str, Any]:
         return json.load(handle)
 
 
+def _load_app_config(path: str) -> Dict[str, Any]:
+    """加载应用配置文件，不存在时返回空配置。"""
+    try:
+        return _load_json(path)
+    except FileNotFoundError:
+        return {}
+
+
 def _setup_logging() -> None:
     """配置全局日志格式。"""
     logging.basicConfig(
@@ -162,6 +171,16 @@ def _parse_agent_names(raw: str) -> List[str]:
     """解析并规范化 Agent 名称列表。"""
     names = [name.strip() for name in raw.split(",") if name.strip()]
     return names or list(DEFAULT_AGENT_NAMES)
+
+
+def _resolve_agent_names(value: Any) -> List[str]:
+    """兼容数组或字符串的 Agent 名称配置。"""
+    if value is None:
+        return list(DEFAULT_AGENT_NAMES)
+    if isinstance(value, list):
+        names = [str(item).strip() for item in value if str(item).strip()]
+        return names or list(DEFAULT_AGENT_NAMES)
+    return _parse_agent_names(str(value))
 
 
 def _memory_path_for_agent(name: str) -> Path:
@@ -464,19 +483,25 @@ async def main_async(args: argparse.Namespace) -> None:
     _setup_logging()
     logger = logging.getLogger("alicization")
 
-    persona = _load_json(args.persona_path)
-    llm_config = _load_json(args.llm_config_path)
+    app_config = _load_app_config(args.app_config_path)
+    knowledge_path = app_config.get("knowledge_path", "data/knowledge_graph.json")
+    worldview_path = app_config.get("worldview_path", "data/world_lore.json")
+    llm_config_path = app_config.get("llm_config_path", "data/llm_config.json")
+    persona_path = app_config.get("persona_path", "data/personas/default.json")
+
+    persona = _load_json(persona_path)
+    llm_config = _load_json(llm_config_path)
     llm_group = build_llm_group(llm_config)
 
     memory_llm = llm_group.for_module("memory")
     intent_llm = llm_group.for_module("behavior")
-    worldview = _load_worldview(args.worldview_path, logger)
+    worldview = _load_worldview(worldview_path, logger)
 
-    agent_names = _parse_agent_names(args.agents)
+    agent_names = _resolve_agent_names(app_config.get("agents"))
     agents = _build_agents(
         agent_names=agent_names,
         persona=persona,
-        knowledge_path=args.knowledge_path,
+        knowledge_path=knowledge_path,
         worldview=worldview,
         llm_config=llm_config,
         memory_llm=memory_llm,
@@ -484,10 +509,16 @@ async def main_async(args: argparse.Namespace) -> None:
         embed_api=llm_group.embed_api,
     )
 
+    memory_test = bool(app_config.get("memory_test", False))
     if args.memory_test:
+        memory_test = True
+    run_seconds = app_config.get("run_seconds", 0)
+    if args.run_seconds is not None:
+        run_seconds = args.run_seconds
+    if memory_test:
         await _run_memory_test(agents)
-    elif args.run_seconds:
-        await _run_demo(agents, args.run_seconds)
+    elif run_seconds:
+        await _run_demo(agents, int(run_seconds))
     else:
         await _run_cli(agents)
 
@@ -496,40 +527,20 @@ def parse_args() -> argparse.Namespace:
     """定义并解析 CLI 参数。"""
     parser = argparse.ArgumentParser(description="Alicization World MVP")
     parser.add_argument(
-        "--knowledge-path",
-        default="data/knowledge_graph.json",
-        help="Path to knowledge graph JSON",
-    )
-    parser.add_argument(
-        "--worldview-path",
-        default="data/world_lore.json",
-        help="Path to worldview JSON",
-    )
-    parser.add_argument(
-        "--llm-config-path",
-        default="data/llm_config.json",
-        help="Path to LLM config JSON",
-    )
-    parser.add_argument(
-        "--persona-path",
-        default="data/personas/default.json",
-        help="Path to persona JSON",
-    )
-    parser.add_argument(
-        "--agents",
-        default=",".join(DEFAULT_AGENT_NAMES),
-        help="Comma-separated agent names",
+        "--app-config-path",
+        default=DEFAULT_APP_CONFIG_PATH,
+        help="Path to app config JSON",
     )
     parser.add_argument(
         "--run-seconds",
         type=int,
-        default=0,
-        help="Run scripted demo for N seconds (0 means CLI)",
+        default=None,
+        help="Override demo run seconds",
     )
     parser.add_argument(
         "--memory-test",
         action="store_true",
-        help="Run scripted dialogue and print memory retrieval results",
+        help="Override to run memory test",
     )
     parser.add_argument(
         "--webui",
@@ -538,14 +549,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--webui-host",
-        default="127.0.0.1",
-        help="Web UI host address",
+        default=None,
+        help="Override Web UI host address",
     )
     parser.add_argument(
         "--webui-port",
         type=int,
-        default=8000,
-        help="Web UI port",
+        default=None,
+        help="Override Web UI port",
     )
     return parser.parse_args()
 
@@ -556,7 +567,11 @@ def main() -> None:
     if args.webui:
         from web.server import run_server
 
-        run_server(host=args.webui_host, port=args.webui_port)
+        app_config = _load_app_config(args.app_config_path)
+        webui_config = app_config.get("webui", {})
+        host = args.webui_host or webui_config.get("host", "127.0.0.1")
+        port = args.webui_port or webui_config.get("port", 8000)
+        run_server(host=host, port=int(port))
         return
     try:
         asyncio.run(main_async(args))

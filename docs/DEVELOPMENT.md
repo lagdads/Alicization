@@ -63,7 +63,6 @@ alicization_world/
 │   │   └── llm_interface.py   # RAG与Prompt构建
 │   ├── behavior/              # 行为层 (原始文档要求)
 │   │   ├── goap.py            # 目标导向规划
-│   │   └── behavior_tree.py   # 执行层
 │   └── world/                 # 世界层（暂缓）
 │       └── environment.py     # 坐标、时间、物理规则（暂缓）
 ├── data/                      # 预设数据
@@ -168,7 +167,6 @@ class MemoryFragment:
 ```python
 class KnowledgeBase:
     tree: Dict[str, KnowledgeNode]  # 知识树节点字典
-    root_id: str                    # 根节点ID
 ```
 
 **节点结构** (JSON):
@@ -201,9 +199,6 @@ class KnowledgeBase:
    - 检查前置条件（prerequisites）是否满足
    - 如果满足，将节点标记为 `is_locked = False`
    - 返回是否成功解锁
-
-4. **`get_available_knowledge() -> List[str]`**
-   - 返回所有已解锁的知识节点 ID 列表
 
 **拦截器** (`interceptor.py`):
 ```python
@@ -266,23 +261,6 @@ plan = [
     Action("make_fire", {"has_wood": True}, {"has_fire": True}, cost=2.0)
 ]
 ```
-
-#### Behavior Tree
-
-**Class**: `BehaviorTree`
-
-**位置**: `src/behavior/behavior_tree.py`
-
-**节点类型**:
-- **Sequence**: 顺序执行子节点，全部成功才返回成功
-- **Selector**: 选择执行子节点，有一个成功即返回成功
-- **Condition**: 条件检查节点
-- **Action**: 动作执行节点
-
-**Integration (The Brain-Body Link)**:
-1. Cognitive Core 产出 **意图 (Intent)** (e.g., "我想炸掉这个门")
-2. GOAP 将意图转化为 **动作链** (e.g., `Learn_Gunpowder -> Craft_Bomb -> Use_Bomb`)
-3. Behavior Tree 执行具体的动作序列
 
 ### Module C: 引擎调度 (Engine Core)
 

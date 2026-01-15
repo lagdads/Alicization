@@ -147,10 +147,3 @@ class WorldviewKnowledge:
                 if tag_lower and tag_lower in text_lower:
                     return entry
         return None
-
-    def find_relevant(self, text: str) -> str:
-        """返回与文本最相关的世界观内容。"""
-        matched = self.match_entry(text)
-        if matched and matched.content:
-            return matched.content
-        return self.intro()

@@ -51,6 +51,13 @@ Consolidation / Minor GC
 Core Persona (Key-Value，免疫所有 GC)
 ```
 
+#### 记忆持久化 (Long-term Storage)
+
+- 存储位置：`data/memory/<safe-name>-<hash>.json`（每个 NPC 一个文件）
+- 启动时加载快照，合并到 Core Persona 与 Episodic Store
+- 记忆变更后自动写回，保障跨运行保留
+- 人设文件内容会写入 Core Persona 的 `persona_profile`，作为长效记忆的一部分
+
 #### 算法一：记忆固化 (Consolidation / Minor GC)
 
 - 触发：感知缓冲区满、或对话结束/显式 flush
@@ -90,6 +97,8 @@ LLM 摘要和评分
     ↓
 评分 >= promotion_threshold → Episodic Store (Vector DB)
     ↓
+持久化写盘（Long-term Snapshot）
+    ↓
 定期 Major GC (遗忘曲线)
 ```
 
@@ -112,7 +121,7 @@ learn(topic)
 ```
 Worldview JSON
     ↓
-match_entry(text) / find_relevant(text)
+match_entry(text)
     ↓
 返回匹配条目或 summary
 ```

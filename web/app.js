@@ -240,6 +240,95 @@ function renderLlmConfig(config) {
   configForm.appendChild(routingSection);
 }
 
+/** 渲染应用配置表单。 */
+function renderAppConfig(config) {
+  configForm.innerHTML = "";
+
+  const pathSection = createSection("路径配置");
+  const pathGrid = document.createElement("div");
+  pathGrid.className = "field-grid";
+  pathGrid.appendChild(
+    createField({
+      label: "知识树路径",
+      id: "app-knowledge-path",
+      value: config.knowledge_path || "",
+    }).wrapper
+  );
+  pathGrid.appendChild(
+    createField({
+      label: "世界观路径",
+      id: "app-worldview-path",
+      value: config.worldview_path || "",
+    }).wrapper
+  );
+  pathGrid.appendChild(
+    createField({
+      label: "LLM 配置路径",
+      id: "app-llm-path",
+      value: config.llm_config_path || "",
+    }).wrapper
+  );
+  pathGrid.appendChild(
+    createField({
+      label: "人设路径",
+      id: "app-persona-path",
+      value: config.persona_path || "",
+    }).wrapper
+  );
+  pathSection.appendChild(pathGrid);
+  configForm.appendChild(pathSection);
+
+  const agentSection = createSection("启动配置");
+  const agentGrid = document.createElement("div");
+  agentGrid.className = "field-grid";
+  agentGrid.appendChild(
+    createField({
+      label: "Agent 列表（逗号分隔）",
+      id: "app-agents",
+      value: Array.isArray(config.agents) ? config.agents.join(", ") : "",
+    }).wrapper
+  );
+  agentGrid.appendChild(
+    createField({
+      label: "演示运行秒数",
+      id: "app-run-seconds",
+      value: config.run_seconds ?? "",
+      type: "number",
+    }).wrapper
+  );
+  agentGrid.appendChild(
+    createCheckboxField({
+      label: "启动记忆测试",
+      id: "app-memory-test",
+      checked: config.memory_test,
+    }).wrapper
+  );
+  agentSection.appendChild(agentGrid);
+  configForm.appendChild(agentSection);
+
+  const webuiSection = createSection("Web UI");
+  const webuiGrid = document.createElement("div");
+  webuiGrid.className = "field-grid";
+  const webui = config.webui || {};
+  webuiGrid.appendChild(
+    createField({
+      label: "Host",
+      id: "app-webui-host",
+      value: webui.host || "",
+    }).wrapper
+  );
+  webuiGrid.appendChild(
+    createField({
+      label: "Port",
+      id: "app-webui-port",
+      value: webui.port ?? "",
+      type: "number",
+    }).wrapper
+  );
+  webuiSection.appendChild(webuiGrid);
+  configForm.appendChild(webuiSection);
+}
+
 /** 渲染人设配置表单。 */
 function renderPersonaConfig(config) {
   configForm.innerHTML = "";
@@ -389,7 +478,9 @@ function renderKnowledgeGraph(config) {
 
 /** 根据配置类型渲染表单。 */
 function renderConfigForm(configId, config) {
-  if (configId === "llm_config") {
+  if (configId === "app_config") {
+    renderAppConfig(config);
+  } else if (configId === "llm_config") {
     renderLlmConfig(config);
   } else if (isPersonaConfigId(configId)) {
     renderPersonaConfig(config);
@@ -435,6 +526,29 @@ function buildLlmConfig(base) {
     "route-behavior-intent"
   ).value;
 
+  return updated;
+}
+
+/** 从表单构建应用配置对象。 */
+function buildAppConfig(base) {
+  const updated = deepClone(base);
+  updated.knowledge_path = document.getElementById("app-knowledge-path").value.trim();
+  updated.worldview_path = document.getElementById("app-worldview-path").value.trim();
+  updated.llm_config_path = document.getElementById("app-llm-path").value.trim();
+  updated.persona_path = document.getElementById("app-persona-path").value.trim();
+  updated.agents = splitList(document.getElementById("app-agents").value);
+  updated.run_seconds = readNumber(
+    document.getElementById("app-run-seconds").value || "0",
+    "Run seconds"
+  );
+  updated.memory_test = document.getElementById("app-memory-test").checked;
+
+  updated.webui = updated.webui || {};
+  updated.webui.host = document.getElementById("app-webui-host").value.trim();
+  updated.webui.port = readNumber(
+    document.getElementById("app-webui-port").value || "8000",
+    "Web UI port"
+  );
   return updated;
 }
 
@@ -510,6 +624,9 @@ function buildKnowledgeGraph(base) {
 function buildConfigPayload() {
   if (!currentConfigId || !currentConfigData) {
     return null;
+  }
+  if (currentConfigId === "app_config") {
+    return buildAppConfig(currentConfigData);
   }
   if (currentConfigId === "llm_config") {
     return buildLlmConfig(currentConfigData);

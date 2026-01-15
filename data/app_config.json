@@ -1,0 +1,13 @@
+{
+  "knowledge_path": "data/knowledge_graph.json",
+  "worldview_path": "data/world_lore.json",
+  "llm_config_path": "data/llm_config.json",
+  "persona_path": "data/personas/default.json",
+  "agents": ["Alice", "Boris", "Celia"],
+  "run_seconds": 0,
+  "memory_test": false,
+  "webui": {
+    "host": "127.0.0.1",
+    "port": 8000
+  }
+}

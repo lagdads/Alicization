@@ -28,7 +28,6 @@ class KnowledgeBase:
     def __init__(self, interceptor: Optional[KnowledgeInterceptor] = None) -> None:
         """初始化知识树与拦截器。"""
         self.tree: Dict[str, KnowledgeNode] = {}
-        self.root_id: Optional[str] = None
         self.interceptor = interceptor
 
     def load_from_json(self, filepath: str) -> None:
@@ -44,8 +43,6 @@ class KnowledgeBase:
                 content=node.get("content", ""),
                 prerequisites=node.get("prerequisites", []),
             )
-            if knowledge_node.parent is None:
-                self.root_id = knowledge_node.node_id
             self.tree[knowledge_node.node_id] = knowledge_node
 
     def query(self, topic: str, context: Optional[dict] = None) -> Optional[str]:
@@ -73,7 +70,3 @@ class KnowledgeBase:
                 return False
         node.is_locked = False
         return True
-
-    def get_available_knowledge(self) -> List[str]:
-        """返回所有已解锁节点 ID 列表。"""
-        return [node_id for node_id, node in self.tree.items() if not node.is_locked]
