@@ -40,12 +40,12 @@ web/
 
 ### 运行入口
 
-- `POST /api/run`：运行 `main.py --run-seconds <n>`
+- `POST /api/run`：运行 `main.py --run-seconds <n>`（读取 `config/app_config.toml` 作为基础配置）
 - 运行时长与输出均有上限，避免阻塞与过量输出
 
 ### UI 编辑模型
 
-- 表单化编辑 LLM、Persona、Knowledge Graph 配置
+- 表单化编辑应用配置、LLM、Persona、Knowledge Graph 配置
 - 不直接暴露可编辑的原始 JSON（只提供只读预览）
 
 ### 安全与限制

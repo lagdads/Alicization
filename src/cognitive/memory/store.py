@@ -15,6 +15,11 @@ from src.cognitive.memory.garbage_collector import apply_ebbinghaus_decay
 from src.cognitive.memory.embedding import cosine_similarity, embed_text
 from src.cognitive.llm_interface import EmbeddingInterface, LLMInterface
 
+try:
+    import chromadb
+except ImportError:  # pragma: no cover - handled by runtime check
+    chromadb = None
+
 
 @dataclass
 class MemoryFragment:
@@ -35,6 +40,48 @@ class SensoryRecord:
 
     content: str
     created_at: float
+
+
+class SensoryLogStore:
+    """对话记录文件存储（JSONL）。"""
+
+    def __init__(self, path: Optional[Path]) -> None:
+        """初始化对话记录存储。"""
+        self._path = path
+
+    def append(self, record: SensoryRecord) -> None:
+        """追加一条对话记录。"""
+        if not self._path:
+            return
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"content": record.content, "created_at": record.created_at}
+        with self._path.open("a", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False)
+            handle.write("\n")
+
+    def list_all(self) -> List[SensoryRecord]:
+        """读取全部对话记录。"""
+        if not self._path or not self._path.exists():
+            return []
+        records: List[SensoryRecord] = []
+        with self._path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                content = str(data.get("content", ""))
+                created_at = float(data.get("created_at", time.time()))
+                records.append(SensoryRecord(content=content, created_at=created_at))
+        return records
+
+    def clear(self) -> None:
+        """清空对话记录文件。"""
+        if self._path and self._path.exists():
+            self._path.unlink()
 
 
 class VectorDBInterface(Protocol):
@@ -152,6 +199,124 @@ def _normalize_embedding(
         return embed_text(content, embedding_dim)
 
 
+class ChromaVectorStore:
+    """基于 ChromaDB 的向量存储实现。"""
+
+    def __init__(
+        self,
+        persist_path: Optional[Path],
+        collection_name: str,
+        embedder: Callable[[str], List[float]],
+    ) -> None:
+        """初始化 ChromaDB 向量存储。"""
+        if chromadb is None:
+            raise RuntimeError("chromadb is required. Install it with `pip install chromadb`.")
+        self.embedder = embedder
+        if persist_path:
+            persist_path.mkdir(parents=True, exist_ok=True)
+            client = chromadb.PersistentClient(path=str(persist_path))
+        else:
+            client = chromadb.Client()
+        self.collection = client.get_or_create_collection(name=collection_name)
+
+    def _to_fragment(
+        self,
+        fragment_id: str,
+        content: str,
+        metadata: Dict[str, Any],
+        embedding: Optional[List[float]],
+    ) -> MemoryFragment:
+        """将 ChromaDB 记录转换为记忆片段。"""
+        try:
+            parsed_id = uuid.UUID(str(fragment_id))
+        except (TypeError, ValueError):
+            parsed_id = uuid.uuid4()
+        created_at = float(metadata.get("created_at", time.time()))
+        importance_score = float(metadata.get("importance_score", 0.0))
+        current_strength = float(metadata.get("current_strength", 0.0))
+        last_accessed_at = float(metadata.get("last_accessed_at", created_at))
+        vector = embedding or self.embedder(content)
+        return MemoryFragment(
+            id=parsed_id,
+            content=content,
+            created_at=created_at,
+            importance_score=importance_score,
+            current_strength=current_strength,
+            last_accessed_at=last_accessed_at,
+            embedding=vector,
+        )
+
+    def add(self, fragment: MemoryFragment) -> uuid.UUID:
+        """存储记忆片段。"""
+        metadata = {
+            "created_at": fragment.created_at,
+            "importance_score": fragment.importance_score,
+            "current_strength": fragment.current_strength,
+            "last_accessed_at": fragment.last_accessed_at,
+        }
+        self.collection.upsert(
+            ids=[str(fragment.id)],
+            documents=[fragment.content],
+            metadatas=[metadata],
+            embeddings=[fragment.embedding],
+        )
+        return fragment.id
+
+    def delete(self, fragment_id: uuid.UUID) -> None:
+        """删除指定片段。"""
+        self.collection.delete(ids=[str(fragment_id)])
+
+    def list_all(self) -> List[MemoryFragment]:
+        """列出全部片段。"""
+        data = self.collection.get(include=["documents", "metadatas", "embeddings"])
+        items: List[MemoryFragment] = []
+        ids = data.get("ids") or []
+        documents = data.get("documents") or []
+        metadatas = data.get("metadatas") or []
+        embeddings = data.get("embeddings") or []
+        for fragment_id, content, metadata, embedding in zip(
+            ids, documents, metadatas, embeddings
+        ):
+            items.append(
+                self._to_fragment(
+                    fragment_id,
+                    content or "",
+                    metadata or {},
+                    embedding,
+                )
+            )
+        return items
+
+    def search(self, query: str, top_k: int) -> List[MemoryFragment]:
+        """按语义相似度检索片段。"""
+        query_embedding = self.embedder(query)
+        data = self.collection.query(
+            query_embeddings=[query_embedding],
+            n_results=top_k,
+            include=["documents", "metadatas", "embeddings"],
+        )
+        ids_list = data.get("ids") or [[]]
+        documents_list = data.get("documents") or [[]]
+        metadatas_list = data.get("metadatas") or [[]]
+        embeddings_list = data.get("embeddings") or [[]]
+        results: List[MemoryFragment] = []
+        for fragment_id, content, metadata, embedding in zip(
+            ids_list[0],
+            documents_list[0],
+            metadatas_list[0],
+            embeddings_list[0],
+        ):
+            results.append(
+                self._to_fragment(
+                    fragment_id,
+                    content or "",
+                    metadata or {},
+                    embedding,
+                )
+            )
+        return results
+
+
 def _fragment_to_dict(fragment: MemoryFragment) -> Dict[str, Any]:
     """将记忆片段转换为可序列化字典。"""
     return {
@@ -195,12 +360,41 @@ def _fragment_from_dict(
     )
 
 
+def _load_core_persona(path: Path) -> Dict[str, str]:
+    """从磁盘加载核心人格快照。"""
+    logger = logging.getLogger("alicization.memory")
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Failed to load core persona file %s: %s", path, exc)
+        return {}
+    return _coerce_str_map(data.get("core_persona", {}))
+
+
+def _save_core_persona(path: Path, core_persona: Dict[str, str]) -> None:
+    """将核心人格快照写入磁盘。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "format_version": 1,
+        "saved_at": time.time(),
+        "core_persona": dict(sorted(core_persona.items())),
+    }
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    tmp_path.replace(path)
+
+
 def _load_memory_snapshot(
     path: Path,
     embedding_dim: int,
     embedder: Optional[Callable[[str], List[float]]] = None,
 ) -> Dict[str, Any]:
-    """从磁盘加载记忆快照。"""
+    """兼容旧版快照格式，从磁盘加载记忆快照。"""
     logger = logging.getLogger("alicization.memory")
     if not path.exists():
         return {"core_persona": {}, "episodic": []}
@@ -264,9 +458,6 @@ class MemoryManager:
     ) -> None:
         """初始化记忆管理器与配置参数。"""
         self.sensory_buffer: Deque[SensoryRecord] = deque()
-        self.episodic_store: VectorDBInterface = vector_store or InMemoryVectorStore(
-            embedding_dim=embedding_dim
-        )
         self.core_persona_store = core_persona_store or InMemoryKeyValueStore()
         self.llm_interface = llm_interface
         self.embedding_api = embedding_api
@@ -280,15 +471,41 @@ class MemoryManager:
         self.weight_strength = weight_strength
         self.reinforce_strength = reinforce_strength
         self._last_decay_at: Dict[str, float] = {}
-        self._memory_path = Path(memory_path) if memory_path else None
-        if self._memory_path:
-            snapshot = _load_memory_snapshot(
-                self._memory_path, self.embedding_dim, self._get_embedding
-            )
-            for key, value in snapshot["core_persona"].items():
+        self._core_path: Optional[Path] = None
+        self._log_path: Optional[Path] = None
+        legacy_snapshot: Optional[Dict[str, Any]] = None
+        episodic_path: Optional[Path] = None
+        collection_name = "episodic"
+        if memory_path:
+            legacy_path = Path(memory_path)
+            base_path = legacy_path.with_suffix("")
+            self._core_path = base_path.with_suffix(".core.json")
+            self._log_path = base_path.with_suffix(".log.jsonl")
+            episodic_path = base_path.with_suffix(".episodic.chroma")
+            collection_name = base_path.name
+            if self._core_path.exists():
+                core_persona = _load_core_persona(self._core_path)
+            elif legacy_path.exists():
+                legacy_snapshot = _load_memory_snapshot(
+                    legacy_path, self.embedding_dim, self._get_embedding
+                )
+                core_persona = legacy_snapshot["core_persona"]
+            else:
+                core_persona = {}
+            for key, value in core_persona.items():
                 self.core_persona_store.set(key, value)
-            for fragment in snapshot["episodic"]:
-                self.episodic_store.add(fragment)
+        self.sensory_log = SensoryLogStore(self._log_path)
+        if vector_store is None:
+            self.episodic_store = ChromaVectorStore(
+                episodic_path, collection_name, self._get_embedding
+            )
+        else:
+            self.episodic_store = vector_store
+        if legacy_snapshot and legacy_snapshot["episodic"]:
+            existing = self.episodic_store.list_all()
+            if not existing:
+                for fragment in legacy_snapshot["episodic"]:
+                    self.episodic_store.add(fragment)
 
     def _get_embedding(self, text: str) -> List[float]:
         """获取文本向量（优先使用外部 embedding API）。"""
@@ -304,6 +521,7 @@ class MemoryManager:
     ) -> Optional[MemoryFragment]:
         """写入感知缓冲区，必要时触发固化。"""
         record = SensoryRecord(content=content, created_at=created_at or time.time())
+        self.sensory_log.append(record)
         self.sensory_buffer.append(record)
         if force_consolidate or len(self.sensory_buffer) >= self.buffer_limit:
             return await self.consolidate()
@@ -354,6 +572,8 @@ class MemoryManager:
                 self.episodic_store.delete(fragment.id)
                 self._last_decay_at.pop(fragment_key, None)
                 dirty = True
+                continue
+            self.episodic_store.add(fragment)
         if dirty:
             self._persist()
 
@@ -361,7 +581,11 @@ class MemoryManager:
         """检索记忆并强化命中片段强度。"""
         query_embedding = self._get_embedding(query)
         scored: List[Tuple[float, MemoryFragment]] = []
-        for fragment in self.episodic_store.list_all():
+        candidate_count = max(top_k * 3, top_k)
+        candidates = self.episodic_store.search(query, candidate_count)
+        if not candidates:
+            candidates = self.episodic_store.list_all()
+        for fragment in candidates:
             similarity = cosine_similarity(query_embedding, fragment.embedding)
             strength_score = (
                 fragment.current_strength / self.max_strength
@@ -378,6 +602,7 @@ class MemoryManager:
             fragment.current_strength = max(fragment.current_strength, self.reinforce_strength)
             if fragment.current_strength > self.max_strength:
                 fragment.current_strength = self.max_strength
+            self.episodic_store.add(fragment)
         if selected:
             self._persist()
         return selected
@@ -397,12 +622,36 @@ class MemoryManager:
         """列出核心人格全部键值对。"""
         return self.core_persona_store.items()
 
+    def snapshot(self) -> Dict[str, Any]:
+        """导出当前记忆快照。"""
+        episodic = [
+            _fragment_to_dict(fragment)
+            for fragment in sorted(
+                self.episodic_store.list_all(),
+                key=lambda frag: frag.created_at,
+            )
+        ]
+        sensory_log = [
+            {"content": record.content, "created_at": record.created_at}
+            for record in self.sensory_log.list_all()
+        ]
+        return {
+            "core_persona": dict(self.core_persona_store.items()),
+            "episodic": episodic,
+            "sensory_log": sensory_log,
+        }
+
+    def reset_session(self) -> None:
+        """重置会话记忆，仅保留核心人格。"""
+        self.sensory_buffer.clear()
+        self.sensory_log.clear()
+        for fragment in list(self.episodic_store.list_all()):
+            self.episodic_store.delete(fragment.id)
+        self._last_decay_at.clear()
+        self._persist()
+
     def _persist(self) -> None:
         """持久化当前记忆状态。"""
-        if not self._memory_path:
+        if not self._core_path:
             return
-        _save_memory_snapshot(
-            self._memory_path,
-            dict(self.core_persona_store.items()),
-            list(self.episodic_store.list_all()),
-        )
+        _save_core_persona(self._core_path, dict(self.core_persona_store.items()))

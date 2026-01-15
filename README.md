@@ -52,10 +52,10 @@ python main.py --run-seconds 5
 
 ```bash
 export OPENAI_API_KEY="your_api_key"
-python main.py --llm-config-path data/llm_config.openai.json
+python main.py --app-config-path config/app_config.toml
 ```
 
-如需自定义 OpenAI 源地址，可在 `data/llm_config.openai.json` 的各 provider 中设置 `base_url`。
+如需自定义 OpenAI 源地址，可在 `config/llm_config.openai.toml` 的各 provider 中设置 `base_url`，并在 `config/app_config.toml` 中指向该配置。
 支持从 `.env` 读取 `*_env` 字段（如 `FAST_API_KEY`、`FAST_WEB`、`FAST_MODEL`）。
 
 ### Web UI (配置编辑与运行)
@@ -71,22 +71,18 @@ python main.py --webui
 python web/server.py
 ```
 
-浏览器访问：`http://127.0.0.1:8000`（可通过 `--webui-host` 与 `--webui-port` 修改）
+浏览器访问：`http://127.0.0.1:8000`（可通过 `config/app_config.toml` 或命令行参数修改）
 
-可编辑配置：LLM 分组、默认 Persona、Knowledge Graph 节点。
+可编辑配置：应用配置、LLM 分组、默认 Persona、Knowledge Graph 节点。
 
-### 运行参数
+### 运行参数（CLI 覆盖）
 
-- `--knowledge-path`：知识树 JSON 路径（默认 `data/knowledge_graph.json`）
-- `--worldview-path`：世界观 JSON 路径（默认 `data/world_lore.json`）
-- `--llm-config-path`：LLM 分组配置路径（默认 `data/llm_config.json`）
-- `--persona-path`：人设 JSON 路径（默认 `data/personas/default.json`）
-- `--agents`：Agent 名称列表（逗号分隔）
-- `--run-seconds`：脚本化演示秒数（默认进入 CLI）
-- `--memory-test`：运行脚本化对话并打印记忆检索结果
+- `--app-config-path`：应用配置路径（默认 `config/app_config.toml`）
+- `--run-seconds`：覆盖应用配置中的演示秒数
+- `--memory-test`：覆盖应用配置，执行记忆测试
 - `--webui`：启动本地 Web UI（不运行 demo loop）
-- `--webui-host`：Web UI 监听地址（默认 `127.0.0.1`）
-- `--webui-port`：Web UI 监听端口（默认 `8000`）
+- `--webui-host`：覆盖 Web UI 监听地址
+- `--webui-port`：覆盖 Web UI 监听端口
 
 ### CLI 使用速览
 
@@ -102,9 +98,10 @@ python web/server.py
 ├── src/                       # 核心代码
 │   ├── core/                  # 引擎核心：双循环/事件/实体
 │   ├── cognitive/             # 认知层：记忆/知识/LLM 接口
-│   ├── behavior/              # 行为层：GOAP/行为树
+│   ├── behavior/              # 行为层：GOAP
 │   └── world/                 # 世界层：暂缓使用（保留）
-├── data/                      # 预设数据（知识树/人设）
+├── config/                    # 运行配置（app/llm/knowledge）
+├── data/                      # 预设数据（世界观/人设/记忆）
 ├── docs/                      # 设计与开发文档
 ├── web/                       # 本地 Web UI（配置编辑与运行）
 ├── main.py                    # 启动入口
@@ -113,10 +110,10 @@ python web/server.py
 
 ## 数据目录
 
-- `data/knowledge_graph.json`: 初始知识树定义
-- `data/world_lore.json`: 世界观知识定义
-- `data/llm_config.json`: LLM 分组配置（embedding/fast/advanced）
-- `data/personas/*.json`: Agent/NPC 人设与记忆参数
+- `config/knowledge_graph.toml`: 初始知识树定义
+- `data/world_lore.toml`: 世界观知识定义
+- `config/llm_config.toml`: LLM 分组配置（embedding/fast/advanced）
+- `data/personas/*.toml`: Agent/NPC 人设与记忆参数
 
 ## 文档索引
 
@@ -182,9 +179,9 @@ python web/server.py
 
 - 向量库默认实现为内存检索（可替换为 ChromaDB 适配器）
 - LLM 接口默认实现为 Stub（可替换为真实 LLM 服务）
-- 人设记忆配置键：`promotion_threshold`、`decay_rate`、`forget_threshold`、`max_strength`（见 `data/personas/default.json`）
-- LLM 分组配置键：`providers.embed_api`、`providers.fast_api`、`providers.advanced_api`（见 `data/llm_config.json`）
-- 模块路由配置：`routing.<module>.<task>`，用于指定模块使用 fast/advanced（见 `data/llm_config.json`）
+- 人设记忆配置键：`promotion_threshold`、`decay_rate`、`forget_threshold`、`max_strength`（见 `data/personas/default.toml`）
+- LLM 分组配置键：`providers.embed_api`、`providers.fast_api`、`providers.advanced_api`（见 `config/llm_config.toml`）
+- 模块路由配置：`routing.<module>.<task>`，用于指定模块使用 fast/advanced（见 `config/llm_config.toml`）
 
 ## 架构设计原则
 

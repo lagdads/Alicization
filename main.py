@@ -9,6 +9,7 @@ import json
 import logging
 import re
 import time
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -32,19 +33,20 @@ DEFAULT_ACTIONS = [
     Action("explore_ruins", {}, {"has_map": True}, cost=1.5),
 ]
 MEMORY_DIR = Path("data/memory")
-DEFAULT_APP_CONFIG_PATH = "data/app_config.json"
+KNOWLEDGE_DIR = Path("data/knowledge")
+SAVE_DIR = Path("data/saves")
+DEFAULT_APP_CONFIG_PATH = "config/app_config.toml"
 
 HELP_TEXT = """命令帮助:
-  /help                      显示帮助
-  /list                      列出可用 AI
-  /use <name>                切换当前对话 AI
-  /all <message>             广播给所有 AI
-  /act [name] <goal>         触发一次行动 (goal: action 名称或 key=value)
-  /state [name]              查看 AI 当前状态
-  /lore [name]               查看世界观概要
-  /quit                      退出
-快捷输入:
-  @<name> <message>          向指定 AI 发言
+  /help               显示帮助
+  /list               列出角色
+  /use <name>         进入与该角色的对话
+  /exit               退出当前对话
+  /state [name]       查看角色状态
+  /lore [name]        查看世界观概要
+  /act <goal>         触发当前角色行动 (goal: action 名称或 key=value)
+  /save [label]       保存当前进度
+  /quit               退出程序
 """
 
 
@@ -130,6 +132,9 @@ class ChatAgent:
 
     def _knowledge_hint(self, message: str) -> Optional[str]:
         """匹配消息与知识节点并返回可访问内容。"""
+        semantic = self.knowledge_base.semantic_query(message, {"agent": self.name})
+        if semantic:
+            return semantic
         topic = _match_topic(message, list(self.knowledge_base.tree.keys()))
         if not topic:
             return None
@@ -145,8 +150,12 @@ class ChatAgent:
         return None
 
 
-def _load_json(path: str) -> Dict[str, Any]:
-    """从文件加载 JSON 内容。"""
+def _load_config(path: str) -> Dict[str, Any]:
+    """从 JSON/TOML 文件加载配置内容。"""
+    suffix = Path(path).suffix.lower()
+    if suffix == ".toml":
+        with open(path, "rb") as handle:
+            return tomllib.load(handle)
     with open(path, "r", encoding="utf-8") as handle:
         return json.load(handle)
 
@@ -154,7 +163,7 @@ def _load_json(path: str) -> Dict[str, Any]:
 def _load_app_config(path: str) -> Dict[str, Any]:
     """加载应用配置文件，不存在时返回空配置。"""
     try:
-        return _load_json(path)
+        return _load_config(path)
     except FileNotFoundError:
         return {}
 
@@ -184,12 +193,21 @@ def _resolve_agent_names(value: Any) -> List[str]:
 
 
 def _memory_path_for_agent(name: str) -> Path:
-    """为指定 Agent 生成记忆快照路径。"""
+    """为指定角色生成记忆文件基准路径。"""
     safe = re.sub(r"[^A-Za-z0-9_-]+", "_", name.strip()).strip("_")
     if not safe:
         safe = "npc"
     digest = hashlib.md5(name.encode("utf-8")).hexdigest()[:8]
     return MEMORY_DIR / f"{safe}-{digest}.json"
+
+
+def _knowledge_path_for_agent(name: str) -> Path:
+    """为指定角色生成知识向量库路径。"""
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", name.strip()).strip("_")
+    if not safe:
+        safe = "npc"
+    digest = hashlib.md5(name.encode("utf-8")).hexdigest()[:8]
+    return KNOWLEDGE_DIR / f"{safe}-{digest}.chroma"
 
 
 def _parse_goal_token(token: str, actions: List[Action]) -> Dict[str, Any]:
@@ -238,6 +256,37 @@ def _format_state(state: Dict[str, Any]) -> str:
     return ", ".join(f"{key}={value}" for key, value in state.items())
 
 
+def _save_game_snapshot(
+    agents: Dict[str, ChatAgent], label: Optional[str] = None
+) -> Path:
+    """保存当前进度到本地文件。"""
+    SAVE_DIR.mkdir(parents=True, exist_ok=True)
+    safe_label = ""
+    if label:
+        safe_label = re.sub(r"[^A-Za-z0-9_-]+", "_", label.strip()).strip("_")
+    if safe_label:
+        filename = f"{safe_label}.json"
+    else:
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        filename = f"save-{timestamp}.json"
+    payload = {
+        "format_version": 1,
+        "saved_at": time.time(),
+        "characters": {
+            name: {
+                "memory": agent.memory.snapshot(),
+                "state": dict(agent.state),
+            }
+            for name, agent in agents.items()
+        },
+    }
+    path = SAVE_DIR / filename
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    return path
+
+
 async def _prompt(text: str) -> str:
     """在线程中运行阻塞式输入。"""
     # input() 是阻塞式的，因此放入线程执行。
@@ -266,7 +315,11 @@ def _build_agents(
     )
     agents: Dict[str, ChatAgent] = {}
     for name in agent_names:
-        knowledge_base = KnowledgeBase(interceptor=KnowledgeInterceptor())
+        knowledge_base = KnowledgeBase(
+            interceptor=KnowledgeInterceptor(),
+            embedder=embed_api,
+            vector_store_path=_knowledge_path_for_agent(name),
+        )
         knowledge_base.load_from_json(knowledge_path)
         for node_id in persona.get("initial_knowledge", []):
             knowledge_base.learn(node_id)
@@ -287,6 +340,7 @@ def _build_agents(
         memory.set_core_persona(
             "persona_profile", json.dumps(persona, ensure_ascii=False)
         )
+        memory.reset_session()
 
         planner = GOAPPlanner(actions=list(DEFAULT_ACTIONS))
         state = dict(DEFAULT_AGENT_STATE)
@@ -308,105 +362,102 @@ async def _run_cli(agents: Dict[str, ChatAgent]) -> None:
     """运行多 Agent 交互式 CLI。"""
     names = list(agents.keys())
     if not names:
-        print("No agents configured.")
+        print("未配置角色。")
         return
-    active_name = names[0]
+    active_name: Optional[str] = None
 
-    print("多 AI CLI 已启动。输入 /help 查看命令。")
-    for agent in agents.values():
-        print(f"\n{agent.name}:\n{agent.introduce()}")
+    print("命令行已启动。输入 /help 查看命令。")
 
     while True:
-        raw = (await _prompt(f"\n[{active_name}]> ")).strip()
+        prompt_label = f"[{active_name}]> " if active_name else "> "
+        raw = (await _prompt(prompt_label)).strip()
         if not raw:
             continue
-        if raw in ("/quit", "/exit"):
-            print("已退出。")
-            break
-        if raw == "/help":
-            print(HELP_TEXT)
-            continue
-        if raw == "/list":
-            print("Agents: " + ", ".join(names))
-            continue
-        if raw.startswith("/use "):
-            target = raw.split(maxsplit=1)[1].strip()
-            if target in agents:
-                active_name = target
-                print(f"当前 AI: {active_name}")
-            else:
-                print(f"未知 AI: {target}")
-            continue
-        if raw.startswith("/state"):
+        if raw.startswith("/"):
             parts = raw.split(maxsplit=1)
-            target = parts[1] if len(parts) > 1 else active_name
-            agent = agents.get(target)
-            if not agent:
-                print(f"未知 AI: {target}")
-                continue
-            print(f"{agent.name} state: {_format_state(agent.state)}")
-            continue
-        if raw.startswith("/lore"):
-            parts = raw.split(maxsplit=1)
-            target = parts[1] if len(parts) > 1 else active_name
-            agent = agents.get(target)
-            if not agent:
-                print(f"未知 AI: {target}")
-                continue
-            intro = agent.worldview.intro()
-            if intro:
-                print(f"{agent.name} world: {intro}")
-            else:
-                print("世界观为空")
-            continue
-        if raw.startswith("/act"):
-            parts = raw.split(maxsplit=2)
-            if len(parts) < 2:
-                print("用法: /act [name] <goal>")
-                continue
-            if len(parts) == 2:
-                agent = agents[active_name]
-                goal = parts[1]
-            else:
-                agent_name = parts[1]
-                if agent_name in agents:
-                    agent = agents[agent_name]
-                    goal = parts[2]
+            command = parts[0]
+            arg = parts[1].strip() if len(parts) > 1 else ""
+            if command == "/quit":
+                print("已退出。")
+                break
+            if command == "/exit":
+                if active_name is None:
+                    print("未在对话中。")
                 else:
-                    agent = agents[active_name]
-                    goal = " ".join(parts[1:])
-            result = await agent.act_once(goal)
-            if result.action:
-                print(
-                    f"{agent.name} action: {result.action.name} | {result.reason}"
-                )
-            else:
-                print(f"{agent.name} action failed: {result.reason}")
-            print(f"state: {_format_state(agent.state)}")
-            continue
-        if raw.startswith("/all "):
-            message = raw.split(maxsplit=1)[1]
-            for agent in agents.values():
-                response = await agent.respond(message)
-                print(f"\n{agent.name}:\n{response}")
-            continue
-        if raw.startswith("@"):
-            parts = raw[1:].split(maxsplit=1)
-            if len(parts) < 2:
-                print("用法: @<name> <message>")
+                    active_name = None
                 continue
-            target, message = parts
-            agent = agents.get(target)
-            if not agent:
-                print(f"未知 AI: {target}")
+            if command == "/help":
+                print(HELP_TEXT)
                 continue
-            response = await agent.respond(message)
-            print(f"\n{agent.name}:\n{response}")
+            if command == "/list":
+                print(", ".join(names))
+                continue
+            if command == "/use":
+                if not arg:
+                    print("用法: /use <name>")
+                    continue
+                if arg in agents:
+                    active_name = arg
+                else:
+                    print(f"未知角色: {arg}")
+                continue
+            if command == "/state":
+                target = arg or active_name
+                if not target:
+                    print("未选择角色。")
+                    continue
+                agent = agents.get(target)
+                if not agent:
+                    print(f"未知角色: {target}")
+                    continue
+                prefix = "状态" if target == active_name else f"{agent.name} 状态"
+                print(f"{prefix}: {_format_state(agent.state)}")
+                continue
+            if command == "/lore":
+                target = arg or active_name
+                if not target:
+                    print("未选择角色。")
+                    continue
+                agent = agents.get(target)
+                if not agent:
+                    print(f"未知角色: {target}")
+                    continue
+                intro = agent.worldview.intro()
+                if intro:
+                    prefix = "世界观" if target == active_name else f"{agent.name} 世界观"
+                    print(f"{prefix}: {intro}")
+                else:
+                    print("世界观为空。")
+                continue
+            if command == "/act":
+                if not active_name:
+                    print("未选择角色。")
+                    continue
+                if not arg:
+                    print("用法: /act <goal>")
+                    continue
+                agent = agents[active_name]
+                result = await agent.act_once(arg)
+                if result.action:
+                    line = f"行动: {result.action.name} | {result.reason}"
+                else:
+                    line = f"行动失败: {result.reason}"
+                line += f" | 状态: {_format_state(agent.state)}"
+                print(line)
+                continue
+            if command == "/save":
+                path = _save_game_snapshot(agents, arg or None)
+                print(f"已存档: {path.as_posix()}")
+                continue
+            print("未知命令。")
             continue
 
+        if active_name is None:
+            print("请先 /use <name>。")
+            continue
         agent = agents[active_name]
         response = await agent.respond(raw)
-        print(f"\n{agent.name}:\n{response}")
+        print(response)
 
 
 async def _run_demo(agents: Dict[str, ChatAgent], run_seconds: int) -> None:
@@ -444,6 +495,8 @@ async def _run_memory_test(agents: Dict[str, ChatAgent]) -> None:
 
     for agent in agents.values():
         print(f"\n[{agent.name}] Memory Test")
+        if agent.memory.promotion_threshold > 1.0:
+            agent.memory.promotion_threshold = 1.0
         for batch in dialogue_batches:
             for speaker, text in batch:
                 await agent.memory.add_sensory_input(f"{speaker}: {text}")
@@ -489,8 +542,8 @@ async def main_async(args: argparse.Namespace) -> None:
     llm_config_path = app_config.get("llm_config_path", "data/llm_config.json")
     persona_path = app_config.get("persona_path", "data/personas/default.json")
 
-    persona = _load_json(persona_path)
-    llm_config = _load_json(llm_config_path)
+    persona = _load_config(persona_path)
+    llm_config = _load_config(llm_config_path)
     llm_group = build_llm_group(llm_config)
 
     memory_llm = llm_group.for_module("memory")

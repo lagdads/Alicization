@@ -15,8 +15,7 @@ Alicization World 采用分层架构设计，核心思想是"世界即记忆"。
                     ↓
 ┌─────────────────────────────────────────┐
 │      Behavior Layer (行为层)            │
-│  - GOAP Planner (目标规划)              │
-│  - Behavior Tree (行为执行)             │
+│  - Behavior Tree (目标分解/执行)        │
 └─────────────────────────────────────────┘
                     ↓
 ┌─────────────────────────────────────────┐
@@ -40,7 +39,7 @@ Alicization World 采用分层架构设计，核心思想是"世界即记忆"。
 - Core: `docs/modules/core.md`
 - Cognitive: `docs/modules/cognitive.md`
 - Behavior: `docs/modules/behavior.md`
-- World: `docs/modules/world.md`（暂缓）
+- World: `docs/modules/world.md`（设计阶段）
 - Web: `docs/modules/web.md`
 
 ## 2. 模块逻辑说明
@@ -49,8 +48,8 @@ Alicization World 采用分层架构设计，核心思想是"世界即记忆"。
 
 - Core（双循环/事件总线/实体）：`docs/modules/core.md`
 - Cognitive（记忆/知识/LLM 接口）：`docs/modules/cognitive.md`
-- Behavior（GOAP/行为树）：`docs/modules/behavior.md`
-- World（环境/时间推进，暂缓）：`docs/modules/world.md`
+- Behavior（行为树）：`docs/modules/behavior.md`
+- World（环境/时间推进，设计阶段）：`docs/modules/world.md`
 - Web（本地配置编辑与运行入口）：`docs/modules/web.md`
 
 Web UI 属于本地开发工具链，不参与引擎运行时循环，主要用于配置编辑与启动 demo。
@@ -66,15 +65,35 @@ Web UI 属于本地开发工具链，不参与引擎运行时循环，主要用�
     ↓
 检索世界观片段
     ↓
-LLM 生成意图
+LLM 生成目标
     ↓
-GOAP 规划
+行为树 tick 选择动作
     ↓
 执行动作
     ↓
 更新记忆
 ```
 记忆模块内的数据流与算法细节见：`docs/modules/cognitive.md`
+
+### 3.2 世界与行为 Tick 数据流
+
+```
+世界 tick
+    ↓
+采集感知 (PerceptionEvent)
+    ↓
+行为树 tick 选择动作
+    ↓
+世界执行动作并更新状态
+    ↓
+动作结果 (ActionResult) 写入记忆
+    ↓
+日终触发记忆整理 (Major GC)
+```
+
+- 世界为 2D 矩阵（中心点为 0, 0），每格为陆地/海洋
+- 每天 24 个 tick，每个 tick NPC 执行 1 个动作
+- 当前仅为设计流程，与实际运行链路解耦
 
 ## 4. 性能设计
 
@@ -87,6 +106,7 @@ GOAP 规划
 | 对话输入 | 事件驱动 | 用户输入触发 |
 | Minor GC | 事件驱动 | 缓冲区满/对话结束触发 |
 | Major GC | 低频 | 日终或系统空闲时触发 |
+| 世界 Tick | 24/天 | 设计值，尚未接入运行 |
 
 ### 4.2 异步设计
 
@@ -124,14 +144,14 @@ GOAP 规划
 ```
 LLM 调用失败 → 重试机制 → 降级处理
 Vector DB 错误 → 日志记录 → 回退到内存
-规划失败 → 返回空序列 → 使用默认行为
+行为失败 → 返回空动作 → 使用默认行为
 ```
 
 ### 6.2 优雅降级
 
 - LLM 不可用时：使用规则引擎
 - Vector DB 不可用时：使用内存存储
-- 规划失败时：使用预定义行为
+- 行为失败时：使用预定义行为
 
 ## 7. 监控与日志
 

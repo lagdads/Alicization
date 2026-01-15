@@ -3,11 +3,19 @@
 输入输出：输入为文件路径与主题；输出为知识内容或解锁结果。"""
 
 import json
+import tomllib
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from pathlib import Path
+from typing import Callable, Dict, Iterable, List, Optional
 
 from src.cognitive.knowledge.interceptor import KnowledgeInterceptor
+from src.cognitive.llm_interface import EmbeddingInterface
+
+try:
+    import chromadb
+except ImportError:  # pragma: no cover - handled by runtime check
+    chromadb = None
 
 
 @dataclass
@@ -22,18 +30,98 @@ class KnowledgeNode:
     last_accessed: float = 0.0
 
 
+class ChromaKnowledgeStore:
+    """基于 ChromaDB 的知识向量索引。"""
+
+    def __init__(
+        self,
+        persist_path: Optional[Path],
+        collection_name: str,
+        embedder: Callable[[str], List[float]],
+    ) -> None:
+        """初始化知识向量库。"""
+        if chromadb is None:
+            raise RuntimeError("chromadb is required. Install it with `pip install chromadb`.")
+        self.embedder = embedder
+        if persist_path:
+            persist_path.mkdir(parents=True, exist_ok=True)
+            client = chromadb.PersistentClient(path=str(persist_path))
+        else:
+            client = chromadb.Client()
+        self.collection = client.get_or_create_collection(name=collection_name)
+
+    def index_nodes(self, nodes: Iterable[KnowledgeNode], replace: bool = True) -> None:
+        """将知识节点写入向量库。"""
+        ids: List[str] = []
+        documents: List[str] = []
+        embeddings: List[List[float]] = []
+        metadatas: List[Dict[str, str]] = []
+        for node in nodes:
+            doc = f"{node.node_id}: {node.content}".strip()
+            ids.append(node.node_id)
+            documents.append(doc)
+            embeddings.append(self.embedder(doc))
+            metadatas.append({"node_id": node.node_id})
+        if not ids:
+            return
+        if replace:
+            existing = self.collection.get().get("ids") or []
+            existing_ids = set(existing)
+            target_ids = set(ids)
+            stale_ids = list(existing_ids - target_ids)
+            if stale_ids:
+                self.collection.delete(ids=stale_ids)
+        self.collection.upsert(
+            ids=ids,
+            documents=documents,
+            embeddings=embeddings,
+            metadatas=metadatas,
+        )
+
+    def upsert_node(self, node: KnowledgeNode) -> None:
+        """更新单个知识节点向量。"""
+        self.index_nodes([node], replace=False)
+
+    def query(self, text: str, top_k: int = 3) -> List[str]:
+        """根据文本检索最相关的知识节点 id。"""
+        embedding = self.embedder(text)
+        data = self.collection.query(
+            query_embeddings=[embedding],
+            n_results=top_k,
+            include=["ids"],
+        )
+        ids_list = data.get("ids") or [[]]
+        return list(ids_list[0])
+
+
 class KnowledgeBase:
     """知识树管理器，负责加载与查询。"""
 
-    def __init__(self, interceptor: Optional[KnowledgeInterceptor] = None) -> None:
+    def __init__(
+        self,
+        interceptor: Optional[KnowledgeInterceptor] = None,
+        embedder: Optional[EmbeddingInterface] = None,
+        vector_store_path: Optional[Path] = None,
+    ) -> None:
         """初始化知识树与拦截器。"""
         self.tree: Dict[str, KnowledgeNode] = {}
         self.interceptor = interceptor
+        self._embedder = embedder
+        self._vector_store: Optional[ChromaKnowledgeStore] = None
+        if embedder is not None:
+            self._vector_store = ChromaKnowledgeStore(
+                vector_store_path, "knowledge", embedder.embed
+            )
 
     def load_from_json(self, filepath: str) -> None:
-        """从 JSON 文件加载知识树结构。"""
-        with open(filepath, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
+        """从 JSON/TOML 文件加载知识树结构。"""
+        suffix = filepath.lower().rsplit(".", 1)[-1]
+        if suffix == "toml":
+            with open(filepath, "rb") as handle:
+                payload = tomllib.load(handle)
+        else:
+            with open(filepath, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
         nodes = payload.get("nodes", [])
         for node in nodes:
             knowledge_node = KnowledgeNode(
@@ -44,6 +132,8 @@ class KnowledgeBase:
                 prerequisites=node.get("prerequisites", []),
             )
             self.tree[knowledge_node.node_id] = knowledge_node
+        if self._vector_store:
+            self._vector_store.index_nodes(self.tree.values())
 
     def query(self, topic: str, context: Optional[dict] = None) -> Optional[str]:
         """按主题查询知识内容，锁定时走拦截器。"""
@@ -57,6 +147,22 @@ class KnowledgeBase:
         node.last_accessed = time.time()
         return node.content
 
+    def semantic_query(self, text: str, context: Optional[dict] = None) -> Optional[str]:
+        """按语义检索知识内容，锁定时走拦截器。"""
+        if not self._vector_store:
+            return None
+        for node_id in self._vector_store.query(text, top_k=3):
+            node = self.tree.get(node_id)
+            if not node:
+                continue
+            if node.is_locked:
+                if self.interceptor:
+                    return self.interceptor.intercept(node.node_id, context or {})
+                return None
+            node.last_accessed = time.time()
+            return node.content
+        return None
+
     def learn(self, topic: str) -> bool:
         """解锁指定主题节点。"""
         node = self.tree.get(topic)
@@ -69,4 +175,6 @@ class KnowledgeBase:
             if prereq_node is None or prereq_node.is_locked:
                 return False
         node.is_locked = False
+        if self._vector_store:
+            self._vector_store.upsert_node(node)
         return True

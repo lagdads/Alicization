@@ -40,6 +40,7 @@
 │   ├── cognitive/
 │   ├── behavior/
 │   └── world/                 # 世界层（暂缓）
+├── config/
 ├── data/
 ├── docs/
 ├── web/
@@ -65,10 +66,13 @@ alicization_world/
 │   │   ├── goap.py            # 目标导向规划
 │   └── world/                 # 世界层（暂缓）
 │       └── environment.py     # 坐标、时间、物理规则（暂缓）
+├── config/                    # 运行配置（TOML）
+│   ├── app_config.toml        # 应用配置入口
+│   ├── llm_config.toml        # LLM 分组配置
+│   └── knowledge_graph.toml   # 知识树配置
 ├── data/                      # 预设数据
-│   ├── knowledge_graph.json   # 初始知识树
-│   ├── world_lore.json         # 世界观知识
-│   └── personas/              # NPC人设配置
+│   ├── world_lore.toml         # 世界观知识
+│   └── personas/              # NPC 人设配置（TOML）
 ├── web/                       # 本地 Web UI
 │   ├── server.py              # 简易 Web 服务与 API
 │   ├── index.html             # Web UI 页面
@@ -352,7 +356,7 @@ class Entity:
 
 ### Knowledge Graph JSON 格式
 
-**文件**: `data/knowledge_graph.json`
+**文件**: `config/knowledge_graph.toml`
 
 ```json
 {
@@ -377,7 +381,7 @@ class Entity:
 
 ### Persona JSON 格式
 
-**文件**: `data/personas/<persona_name>.json`
+**文件**: `data/personas/<persona_name>.toml`
 
 ```json
 {
@@ -395,7 +399,7 @@ class Entity:
 
 ### LLM Config JSON 格式
 
-**文件**: `data/llm_config.json`
+**文件**: `config/llm_config.toml`
 
 ```json
 {
@@ -426,7 +430,7 @@ class Entity:
 }
 ```
 
-如需接入 OpenAI，可使用 `data/llm_config.openai.json` 作为模板，并设置环境变量：
+如需接入 OpenAI，可使用 `config/llm_config.openai.toml` 作为模板，并设置环境变量：
 
 ```bash
 export OPENAI_API_KEY="your_api_key"
@@ -503,19 +507,18 @@ export OPENAI_API_KEY="your_api_key"
 3. **可配置性**: 关键参数（衰减率、阈值等）应可配置
 4. **扩展性**: 基于接口编程，便于替换实现（如 Vector DB）
 5. **文件头说明**: 每个文件开头用中文写明文件职责、简明实现逻辑、输入输出
-6. **LLM 分组与路由**: 关键决策优先使用 `advanced_api`，轻量任务使用 `fast_api`，RAG/相似度使用 `embed_api`；按模块路由在 `data/llm_config.json` 的 `routing` 配置
+6. **LLM 分组与路由**: 关键决策优先使用 `advanced_api`，轻量任务使用 `fast_api`，RAG/相似度使用 `embed_api`；按模块路由在 `config/llm_config.toml` 的 `routing` 配置
 
 ## 10. 运行参数与配置
 
-`main.py` 支持以下参数（均为可选）：
+`main.py` 支持以下参数（均为可选），主要通过应用配置文件驱动：
 
-- `--knowledge-path`: 知识树 JSON 路径（默认 `data/knowledge_graph.json`）
-- `--llm-config-path`: LLM 分组配置路径（默认 `data/llm_config.json`）
-- `--persona-path`: 人设 JSON 路径（默认 `data/personas/default.json`）
-- `--run-seconds`: 示例运行时长（默认不自动停止）
+- `--app-config-path`: 应用配置路径（默认 `config/app_config.toml`）
+- `--run-seconds`: 覆盖应用配置中的示例运行时长
+- `--memory-test`: 覆盖应用配置，执行记忆测试
 - `--webui`: 启动本地 Web UI（不运行 demo loop）
-- `--webui-host`: Web UI 监听地址（默认 `127.0.0.1`）
-- `--webui-port`: Web UI 监听端口（默认 `8000`）
+- `--webui-host`: 覆盖 Web UI 监听地址
+- `--webui-port`: 覆盖 Web UI 监听端口
 
 ### 10.1 Web UI 使用说明
 

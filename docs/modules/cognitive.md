@@ -53,10 +53,12 @@ Core Persona (Key-Value，免疫所有 GC)
 
 #### 记忆持久化 (Long-term Storage)
 
-- 存储位置：`data/memory/<safe-name>-<hash>.json`（每个 NPC 一个文件）
-- 启动时加载快照，合并到 Core Persona 与 Episodic Store
-- 记忆变更后自动写回，保障跨运行保留
-- 人设文件内容会写入 Core Persona 的 `persona_profile`，作为长效记忆的一部分
+- 对话记录（第一层）：`data/memory/<safe-name>-<hash>.log.jsonl`
+- 情节记忆向量库（第二层）：`data/memory/<safe-name>-<hash>.episodic.chroma/`
+- 核心人格快照（第三层）：`data/memory/<safe-name>-<hash>.core.json`
+- 启动时加载 Core Persona；Episodic 与对话记录由各自文件维护
+- 记忆变更后自动写回（对话追加写入，Episodic 写入向量库，Core Persona 更新快照）
+- 人设文件内容会写入 Core Persona 的 `persona_profile`，作为永久记忆的一部分
 
 #### 算法一：记忆固化 (Consolidation / Minor GC)
 
@@ -97,15 +99,44 @@ LLM 摘要和评分
     ↓
 评分 >= promotion_threshold → Episodic Store (Vector DB)
     ↓
-持久化写盘（Long-term Snapshot）
+写入向量库（Long-term Storage）
     ↓
 定期 Major GC (遗忘曲线)
+```
+
+### 与世界/行为层交互
+
+- 世界层在每个 tick 汇总感知事件与行动结果，写入 Sensory Buffer
+- 行为层在生成目标与对话时，调用记忆检索与世界观匹配
+- 访问/持有权限由世界层或行为层裁定，认知层仅提供建议与文本
+- 日终事件可触发 Major GC 与记忆二层整理机制
+
+建议事件结构：
+
+```
+PerceptionEvent = {
+  "tick": int,
+  "entity_id": str,
+  "observations": List[str],
+  "nearby_objects": List[str],
+  "nearby_npcs": List[str]
+}
+
+ActionResult = {
+  "tick": int,
+  "actor_id": str,
+  "action": str,
+  "outcome": str,
+  "delta": dict
+}
 ```
 
 ### 知识系统：树形访问控制 (KnowledgeBase)
 
 ```
 Knowledge Tree (JSON)
+    ↓
+ChromaDB Index (Vector)
     ↓
 query(topic)
   ├─ Locked → interceptor 返回拦截提示 / 或 None
@@ -115,6 +146,8 @@ learn(topic)
   ├─ 前置未满足 → False
   └─ 前置满足 → 解锁并返回 True
 ```
+
+知识向量库位置：`data/knowledge/<safe-name>-<hash>.chroma/`
 
 ### 世界观知识层 (WorldviewKnowledge)
 
@@ -137,13 +170,71 @@ list_all() -> List[MemoryFragment]
 search(query: str, top_k: int) -> List[MemoryFragment]
 ```
 
+默认实现：`ChromaVectorStore`（ChromaDB 持久化目录存储向量与元数据）。
+
 #### LLM Interface
 
 ```
 summarize_and_score(memory: str) -> Tuple[str, float]
 generate_intent(context: dict, memories: List[str]) -> str
 rag_query(query: str, memories: List[str]) -> str
+generate_actions(context: dict, memories: List[str]) -> str
 ```
+
+#### 行为调用格式（函数参数风格 JSON）
+
+LLM 输出为 JSON，包含 `actions` 列表。每个动作必须是可直接调用的函数签名字符串：
+
+```
+{
+  "goal": "获得武器",
+  "actions": [
+    "find_item(item_type=\"weapon\")",
+    "pickup(object_id=\"$weapon_id\")"
+  ]
+}
+```
+
+### 行为工具提示模板
+
+在 LLM prompt 中提供以下调用方式，强调只输出 JSON：
+
+```
+你可以调用行为工具来表达行动步骤。输出必须是 JSON：
+{
+  "goal": "目标描述",
+  "actions": [
+    "action_call",
+    "action_call"
+  ]
+}
+
+动作格式必须为函数签名字符串，例如：
+move_to(x=0, y=0)
+scan_nearby(tag="weapon")
+find_item(item_type="weapon")
+pickup(object_id="$weapon_id")
+talk(target_id="$npc_id", topic="trade")
+```
+
+### 行为工具签名（允许列表）
+
+LLM 仅能输出以下函数签名；参数名必须精确匹配：
+
+```
+move_to(x: int, y: int)
+scan_nearby(tag: str)
+find_item(item_type: str)
+pickup(object_id: str)
+attack(target_id: str)
+talk(target_id: str, topic: str)
+gather(resource_id: str)
+wait(ticks: int)
+```
+
+备注：
+- `find_item` 为高层动作，行为层可拆解为 `move_to` + `scan_nearby`
+- `object_id`、`target_id` 允许使用占位符（例如 `$weapon_id`），由行为层解析
 
 ### LLM 分组配置
 
@@ -153,7 +244,7 @@ LLM 分为三类用途：
 - `fast_api`: 负责轻量逻辑（摘要/评分等）
 - `advanced_api`: 负责关键决策（例如下一步指令）
 
-配置文件示例：`data/llm_config.json`
+配置文件示例：`config/llm_config.toml`
 
 模块路由可配置 `routing`，以决定不同模块使用 fast/advanced：
 

@@ -1,0 +1,12 @@
+[[nodes]]
+id = "basic_crafting"
+is_locked = false
+content = "Basic crafting: can make simple tools"
+prerequisites = []
+
+[[nodes]]
+id = "camp_fire"
+parent = "basic_crafting"
+is_locked = true
+content = "Camp fire: needs wood and a spark"
+prerequisites = ["basic_crafting"]

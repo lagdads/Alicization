@@ -71,8 +71,8 @@
     {
       "id": "appConfigPath",
       "type": "promptString",
-      "description": "Path to app config JSON",
-      "default": "data/app_config.json"
+      "description": "Path to app config TOML",
+      "default": "config/app_config.toml"
     },
     {
       "id": "runSeconds",

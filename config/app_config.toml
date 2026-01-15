@@ -1,0 +1,11 @@
+knowledge_path = "config/knowledge_graph.toml"
+worldview_path = "data/world_lore.toml"
+llm_config_path = "config/llm_config.toml"
+persona_path = "data/personas/default.toml"
+agents = ["Alice", "Boris", "Celia"]
+run_seconds = 0
+memory_test = false
+
+[webui]
+host = "127.0.0.1"
+port = 8000

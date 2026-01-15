@@ -1,0 +1,19 @@
+[providers.embed_api]
+type = "stub"
+embedding_dim = 12
+
+[providers.fast_api]
+type = "stub"
+
+[providers.advanced_api]
+type = "stub"
+
+[routing.default]
+summarize_and_score = "fast"
+generate_intent = "advanced"
+
+[routing.memory]
+summarize_and_score = "fast"
+
+[routing.behavior]
+generate_intent = "advanced"

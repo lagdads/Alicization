@@ -1,0 +1,143 @@
+{
+  "format_version": 1,
+  "saved_at": 1768491839.053099,
+  "core_persona": {
+    "description": "人界边境村落的见习剑士，敬畏禁忌目录，懂一些基础神圣术与野外生存",
+    "name": "Alice",
+    "persona_profile": "{\"name\": \"Alice\", \"description\": \"人界边境村落的见习剑士，敬畏禁忌目录，懂一些基础神圣术与野外生存\", \"worldview_visibility\": \"npc\", \"initial_knowledge\": [\"basic_crafting\"], \"memory_config\": {\"promotion_threshold\": 4.0, \"decay_rate\": 0.1, \"forget_threshold\": 15.0, \"max_strength\": 100.0}}"
+  },
+  "episodic": [
+    {
+      "id": "62cb4eb6-d8cd-42b3-94fd-9e0e924fb343",
+      "content": "User: 我想找木头和火。 Agent: 我会去森林收集木头，并尝试生火。",
+      "created_at": 1768485551.20363,
+      "importance_score": 3.1666666666666665,
+      "current_strength": 100.0,
+      "last_accessed_at": 1768491839.052993,
+      "embedding": [
+        0.0,
+        0.0,
+        0.5,
+        0.0,
+        0.0,
+        0.5,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "id": "6dddf54e-16b0-4cf3-90a9-4b5cecbb7ef0",
+      "content": "User: 我们去探索遗迹吧。 Agent: 好的，我会记录遗迹的路线与风险。",
+      "created_at": 1768485551.204145,
+      "importance_score": 3.25,
+      "current_strength": 100.0,
+      "last_accessed_at": 1768491839.052993,
+      "embedding": [
+        0.0,
+        0.0,
+        0.5,
+        0.0,
+        0.0,
+        0.5,
+        0.0,
+        0.0,
+        0.0,
+        0.5,
+        0.0,
+        0.5
+      ]
+    },
+    {
+      "id": "61acd829-337c-4964-bdaf-bab6880456f8",
+      "content": "User: 记住我喜欢剑技训练。 Agent: 已记录你偏好剑技训练。",
+      "created_at": 1768485551.2043478,
+      "importance_score": 2.9166666666666665,
+      "current_strength": 100.0,
+      "last_accessed_at": 1768491839.052993,
+      "embedding": [
+        0.0,
+        0.0,
+        0.4082482904638631,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.8164965809277261,
+        0.0,
+        0.0,
+        0.0,
+        0.4082482904638631
+      ]
+    },
+    {
+      "id": "7f0903bb-1082-4848-8d5b-24e03b35d37a",
+      "content": "User: 我想找木头和火。 Agent: 我会去森林收集木头，并尝试生火。",
+      "created_at": 1768485577.901345,
+      "importance_score": 3.1666666666666665,
+      "current_strength": 100.0,
+      "last_accessed_at": 1768485577.902345,
+      "embedding": [
+        0.0,
+        0.0,
+        0.5,
+        0.0,
+        0.0,
+        0.5,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "id": "367f5348-2ea6-4d8f-a381-0d4dbc2d87a9",
+      "content": "User: 我们去探索遗迹吧。 Agent: 好的，我会记录遗迹的路线与风险。",
+      "created_at": 1768485577.9018922,
+      "importance_score": 3.25,
+      "current_strength": 100.0,
+      "last_accessed_at": 1768485577.90255,
+      "embedding": [
+        0.0,
+        0.0,
+        0.5,
+        0.0,
+        0.0,
+        0.5,
+        0.0,
+        0.0,
+        0.0,
+        0.5,
+        0.0,
+        0.5
+      ]
+    },
+    {
+      "id": "513a8dcb-0324-4fde-9624-20087972d3bc",
+      "content": "User: 记住我喜欢剑技训练。 Agent: 已记录你偏好剑技训练。",
+      "created_at": 1768485577.902115,
+      "importance_score": 2.9166666666666665,
+      "current_strength": 100.0,
+      "last_accessed_at": 1768485577.902115,
+      "embedding": [
+        0.0,
+        0.0,
+        0.4082482904638631,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.8164965809277261,
+        0.0,
+        0.0,
+        0.0,
+        0.4082482904638631
+      ]
+    }
+  ]
+}

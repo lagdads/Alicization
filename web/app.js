@@ -36,13 +36,13 @@ function normalizePersonaFilename(rawName) {
   if (!trimmed) {
     throw new Error("人设文件名不能为空");
   }
-  const base = trimmed.endsWith(".json")
-    ? trimmed.slice(0, -".json".length)
+  const base = trimmed.endsWith(".toml")
+    ? trimmed.slice(0, -".toml".length)
     : trimmed;
   if (!/^[A-Za-z0-9_-]+$/.test(base)) {
     throw new Error("人设文件名仅支持字母、数字、下划线或短横线");
   }
-  return `${base}.json`;
+  return `${base}.toml`;
 }
 
 /** 设置保存状态提示文本。 */
@@ -734,7 +734,7 @@ async function saveConfig() {
 
 /** 创建新的空人设配置。 */
 async function createEmptyPersona() {
-  const rawName = window.prompt("请输入人设文件名（不含 .json）");
+  const rawName = window.prompt("请输入人设文件名（不含 .toml）");
   if (rawName == null) {
     return;
   }

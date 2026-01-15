@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import tomllib
+import toml
 import re
 import subprocess
 import sys
@@ -17,11 +19,11 @@ STATIC_DIR = ROOT / "web"
 
 PERSONA_DIR = ROOT / "data/personas"
 BASE_CONFIGS: Dict[str, Dict[str, Path]] = {
-    "app_config": {"label": "应用配置", "path": ROOT / "data/app_config.json"},
-    "llm_config": {"label": "LLM 配置", "path": ROOT / "data/llm_config.json"},
+    "app_config": {"label": "应用配置", "path": ROOT / "config/app_config.toml"},
+    "llm_config": {"label": "LLM 配置", "path": ROOT / "config/llm_config.toml"},
     "knowledge_graph": {
         "label": "知识树",
-        "path": ROOT / "data/knowledge_graph.json",
+        "path": ROOT / "config/knowledge_graph.toml",
     },
 }
 
@@ -35,12 +37,17 @@ def _read_text(path: Path) -> str:
         return handle.read()
 
 
-def _write_json_pretty(path: Path, raw_text: str) -> None:
-    """将 JSON 文本写为格式化文件。"""
+def _read_toml(path: Path) -> Dict[str, Any]:
+    """读取 TOML 配置为字典。"""
+    with path.open("rb") as handle:
+        return tomllib.load(handle)
+
+
+def _write_toml_pretty(path: Path, raw_text: str) -> None:
+    """将 JSON 文本转换为 TOML 文件。"""
     data = json.loads(raw_text)
     with path.open("w", encoding="utf-8") as handle:
-        json.dump(data, handle, ensure_ascii=False, indent=2)
-        handle.write("\n")
+        handle.write(toml.dumps(data))
 
 
 def _normalize_persona_filename(raw_name: str) -> str:
@@ -48,20 +55,20 @@ def _normalize_persona_filename(raw_name: str) -> str:
     name = raw_name.strip()
     if not name:
         raise ValueError("人设文件名不能为空")
-    if name.endswith(".json"):
-        base = name[: -len(".json")]
+    if name.endswith(".toml"):
+        base = name[: -len(".toml")]
     else:
         base = name
     if not re.fullmatch(r"[A-Za-z0-9_-]+", base):
         raise ValueError("人设文件名仅支持字母、数字、下划线或短横线")
-    return f"{base}.json"
+    return f"{base}.toml"
 
 
 def _persona_label(path: Path) -> str:
     """从人设文件读取展示标签。"""
     try:
-        data = json.loads(_read_text(path))
-    except json.JSONDecodeError:
+        data = _read_toml(path)
+    except (tomllib.TOMLDecodeError, OSError):
         return path.stem
     return data.get("name") or path.stem
 
@@ -71,7 +78,7 @@ def _list_persona_configs() -> list[dict[str, str]]:
     if not PERSONA_DIR.exists():
         return []
     entries = []
-    for path in sorted(PERSONA_DIR.glob("*.json")):
+    for path in sorted(PERSONA_DIR.glob("*.toml")):
         label = _persona_label(path)
         entries.append({"id": f"persona:{path.name}", "label": f"人设：{label}"})
     return entries
@@ -170,7 +177,8 @@ class WebHandler(BaseHTTPRequestHandler):
             if not config:
                 self._send_api_error(404, "未知配置")
                 return
-            content = _read_text(config["path"])
+            payload = _read_toml(config["path"])
+            content = json.dumps(payload, ensure_ascii=False, indent=2)
             self._send_json(
                 200,
                 {"id": config_id, "label": config["label"], "content": content},
@@ -201,8 +209,8 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._send_api_error(400, "配置内容为空")
                 return
             try:
-                _write_json_pretty(config["path"], content)
-            except json.JSONDecodeError as exc:
+                _write_toml_pretty(config["path"], content)
+            except (json.JSONDecodeError, tomllib.TOMLDecodeError) as exc:
                 self._send_api_error(400, f"JSON 格式错误: {exc}")
                 return
             self._send_json(200, {"ok": True})
@@ -234,8 +242,8 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._send_api_error(409, "人设已存在")
                 return
             try:
-                _write_json_pretty(path, content)
-            except json.JSONDecodeError as exc:
+                _write_toml_pretty(path, content)
+            except (json.JSONDecodeError, tomllib.TOMLDecodeError) as exc:
                 self._send_api_error(400, f"JSON 格式错误: {exc}")
                 return
             self._send_json(
