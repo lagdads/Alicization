@@ -1,0 +1,29 @@
+{
+  "文件职责": "定义 LLM 分组配置",
+  "简明实现逻辑": "为 embed/fast/advanced 三类 API 指定提供者，并配置模块路由",
+  "输入输出": "输入为配置定义；输出为 LLM 组装参数",
+  "providers": {
+    "embed_api": {
+      "type": "stub",
+      "embedding_dim": 12
+    },
+    "fast_api": {
+      "type": "stub"
+    },
+    "advanced_api": {
+      "type": "stub"
+    }
+  },
+  "routing": {
+    "default": {
+      "summarize_and_score": "fast",
+      "generate_intent": "advanced"
+    },
+    "memory": {
+      "summarize_and_score": "fast"
+    },
+    "behavior": {
+      "generate_intent": "advanced"
+    }
+  }
+}

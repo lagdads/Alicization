@@ -1,0 +1,44 @@
+{
+  "providers": {
+    "embed_api": {
+      "type": "openai",
+      "model": "text-embedding-3-small",
+      "model_env": "EMBEDDING_MODEL",
+      "api_key_env": "EMBEDDING_API_KEY",
+      "base_url_env": "EMBEDDING_WEB",
+      "base_url": "https://api.openai.com/v1"
+    },
+    "fast_api": {
+      "type": "openai",
+      "model": "gpt-4o-mini",
+      "model_env": "FAST_MODEL",
+      "temperature": 0.2,
+      "max_tokens": 256,
+      "api_key_env": "FAST_API_KEY",
+      "base_url_env": "FAST_WEB",
+      "base_url": "https://api.openai.com/v1"
+    },
+    "advanced_api": {
+      "type": "openai",
+      "model": "gpt-4o",
+      "model_env": "ADVANCED_MODEL",
+      "temperature": 0.2,
+      "max_tokens": 512,
+      "api_key_env": "ADVANCED_API_KEY",
+      "base_url_env": "ADVANCED_WEB",
+      "base_url": "https://api.openai.com/v1"
+    }
+  },
+  "routing": {
+    "default": {
+      "summarize_and_score": "fast",
+      "generate_intent": "advanced"
+    },
+    "memory": {
+      "summarize_and_score": "fast"
+    },
+    "behavior": {
+      "generate_intent": "advanced"
+    }
+  }
+}

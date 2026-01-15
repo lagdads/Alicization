@@ -1,0 +1,21 @@
+{
+  "文件职责": "定义初始知识树节点",
+  "简明实现逻辑": "提供可加载的知识节点列表",
+  "输入输出": "输入为知识定义；输出为知识节点结构",
+  "nodes": [
+    {
+      "id": "basic_crafting",
+      "parent": null,
+      "is_locked": false,
+      "content": "Basic crafting: can make simple tools",
+      "prerequisites": []
+    },
+    {
+      "id": "camp_fire",
+      "parent": "basic_crafting",
+      "is_locked": true,
+      "content": "Camp fire: needs wood and a spark",
+      "prerequisites": ["basic_crafting"]
+    }
+  ]
+}

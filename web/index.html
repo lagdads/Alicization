@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <title>Alicization 配置控制台</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Alicization 实验室</p>
+          <h1>配置控制台</h1>
+          <p class="subhead">
+            通过设置面板调整配置，并在页面上直接运行演示。
+          </p>
+        </div>
+      </header>
+
+      <main class="grid">
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>运行终端</h2>
+              <p class="muted">运行 main.py 并查看实时输出。</p>
+            </div>
+            <div class="controls-inline">
+              <label class="control">
+                <span>运行秒数</span>
+                <input
+                  id="runSeconds"
+                  type="number"
+                  min="1"
+                  max="20"
+                  value="5"
+                />
+              </label>
+              <button id="runDemo" class="primary">运行 main.py</button>
+            </div>
+          </div>
+          <div class="output">
+            <div class="output-meta" id="runMeta">
+              准备就绪。
+            </div>
+            <pre id="runOutput" aria-live="polite"></pre>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>配置面板</h2>
+              <p class="muted">切换配置文件会自动加载。</p>
+            </div>
+            <div class="controls-inline">
+              <label class="control">
+                <span>配置文件</span>
+                <select id="configSelect"></select>
+              </label>
+              <button id="createPersona" class="ghost">新建人设</button>
+            </div>
+          </div>
+          <div class="editor">
+            <div id="configForm" class="form-root" aria-live="polite"></div>
+          </div>
+          <details class="json-preview">
+            <summary>JSON 预览（只读）</summary>
+            <pre id="jsonPreview"></pre>
+          </details>
+          <div class="panel-footer">
+            <button id="saveConfig" class="primary">保存配置</button>
+            <button id="addNode" class="ghost hidden">新增节点</button>
+            <span class="status" id="saveStatus"></span>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

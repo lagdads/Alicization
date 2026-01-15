@@ -1,0 +1,110 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Alicization: Run Demo (default)",
+      "type": "shell",
+      "command": "python",
+      "args": ["main.py"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Alicization: Run Demo (5s)",
+      "type": "shell",
+      "command": "python",
+      "args": ["main.py", "--run-seconds", "5"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Alicization: Run Demo (custom args)",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "main.py",
+        "--knowledge-path",
+        "${input:knowledgePath}",
+        "--llm-config-path",
+        "${input:llmConfigPath}",
+        "--persona-path",
+        "${input:personaPath}",
+        "--run-seconds",
+        "${input:runSeconds}"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Alicization: Run Web UI (default)",
+      "type": "shell",
+      "command": "python",
+      "args": ["main.py", "--webui"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Alicization: Run Web UI (custom host/port)",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "main.py",
+        "--webui",
+        "--webui-host",
+        "${input:webuiHost}",
+        "--webui-port",
+        "${input:webuiPort}"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "knowledgePath",
+      "type": "promptString",
+      "description": "Path to knowledge graph JSON",
+      "default": "data/knowledge_graph.json"
+    },
+    {
+      "id": "llmConfigPath",
+      "type": "promptString",
+      "description": "Path to LLM config JSON",
+      "default": "data/llm_config.json"
+    },
+    {
+      "id": "personaPath",
+      "type": "promptString",
+      "description": "Path to persona JSON",
+      "default": "data/personas/default.json"
+    },
+    {
+      "id": "runSeconds",
+      "type": "promptString",
+      "description": "Run duration in seconds (0 means no auto-stop)",
+      "default": "0"
+    },
+    {
+      "id": "webuiHost",
+      "type": "promptString",
+      "description": "Web UI host address",
+      "default": "127.0.0.1"
+    },
+    {
+      "id": "webuiPort",
+      "type": "promptString",
+      "description": "Web UI port",
+      "default": "8000"
+    }
+  ]
+}
