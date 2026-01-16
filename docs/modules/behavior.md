@@ -33,6 +33,7 @@ LLM 生成目标 (Goal)
 - 行为树按 tick 运行，每次决策只输出 1 个动作
 - 目标被拆解为可执行的 tick 级动作，直到目标完成或中断
 - LLM 输出的动作指令需要进一步拆解为 tick 级子动作
+- 当前实现会先解析 LLM 动作计划，将动作排入队列并逐 tick 执行
 
 ### Tick 级动作
 
@@ -56,6 +57,7 @@ pickup(object_id="$weapon_id")
   - tick1..n: move_to(x=..., y=...)（接近目标区域）
   - tick n+1: scan_nearby(tag="weapon")（感知附近物体）
 - `pickup(...)` → tick 执行收集动作（受持有权限限制）
+- 占位符（如 `$weapon_id`）由行为层在执行时从状态中解析
 
 ## 接口契约
 
@@ -66,7 +68,14 @@ tick(current_state: dict, goal: dict) -> Optional[Action]
 update_state(result: dict) -> None
 ```
 
+### Action 计划解析
+
+```
+parse_action_plan(plan: dict) -> List[Action]
+execute_action(action: Action, state: dict) -> ActionResult
+```
+
 ## 说明
 
-- 当前仅定义行为层设计与接口语义，不与实际应用运行流程链接。
 - 行为层负责校验 LLM 动作签名是否在允许列表内，并进行参数解析与拆解。
+- CLI demo 会在 `respond` 与 `/act` 时调用 LLM 生成动作计划并执行。
