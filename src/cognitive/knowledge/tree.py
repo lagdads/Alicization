@@ -3,6 +3,7 @@
 输入输出：输入为文件路径与主题；输出为知识内容或解锁结果。"""
 
 import json
+import logging
 import toml
 import time
 from dataclasses import dataclass, field
@@ -16,6 +17,10 @@ try:
     import chromadb
 except ImportError:  # pragma: no cover - handled by runtime check
     chromadb = None
+try:
+    from chromadb.errors import InvalidArgumentError
+except Exception:  # pragma: no cover - optional dependency
+    InvalidArgumentError = None
 
 
 @dataclass
@@ -43,12 +48,19 @@ class ChromaKnowledgeStore:
         if chromadb is None:
             raise RuntimeError("chromadb is required. Install it with `pip install chromadb`.")
         self.embedder = embedder
+        self.collection_name = collection_name
         if persist_path:
             persist_path.mkdir(parents=True, exist_ok=True)
             client = chromadb.PersistentClient(path=str(persist_path))
         else:
             client = chromadb.Client()
+        self.client = client
         self.collection = client.get_or_create_collection(name=collection_name)
+
+    def _reset_collection(self) -> None:
+        """重建集合以匹配当前 embedding 维度。"""
+        self.client.delete_collection(name=self.collection_name)
+        self.collection = self.client.get_or_create_collection(name=self.collection_name)
 
     def index_nodes(self, nodes: Iterable[KnowledgeNode], replace: bool = True) -> None:
         """将知识节点写入向量库。"""
@@ -71,12 +83,27 @@ class ChromaKnowledgeStore:
             stale_ids = list(existing_ids - target_ids)
             if stale_ids:
                 self.collection.delete(ids=stale_ids)
-        self.collection.upsert(
-            ids=ids,
-            documents=documents,
-            embeddings=embeddings,
-            metadatas=metadatas,
-        )
+        try:
+            self.collection.upsert(
+                ids=ids,
+                documents=documents,
+                embeddings=embeddings,
+                metadatas=metadatas,
+            )
+        except Exception as exc:
+            if InvalidArgumentError and isinstance(exc, InvalidArgumentError):
+                logging.warning(
+                    "Knowledge collection embedding dim mismatch; rebuilding collection."
+                )
+                self._reset_collection()
+                self.collection.upsert(
+                    ids=ids,
+                    documents=documents,
+                    embeddings=embeddings,
+                    metadatas=metadatas,
+                )
+            else:
+                raise
 
     def upsert_node(self, node: KnowledgeNode) -> None:
         """更新单个知识节点向量。"""

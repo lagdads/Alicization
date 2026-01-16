@@ -303,6 +303,29 @@ function renderAppConfig(config) {
       checked: config.memory_test,
     }).wrapper
   );
+  agentGrid.appendChild(
+    createCheckboxField({
+      label: "自动 Tick 循环",
+      id: "app-auto-tick",
+      checked: config.auto_tick,
+    }).wrapper
+  );
+  agentGrid.appendChild(
+    createField({
+      label: "Tick 间隔(秒)",
+      id: "app-tick-interval",
+      value: config.tick_interval ?? "",
+      type: "number",
+    }).wrapper
+  );
+  agentGrid.appendChild(
+    createField({
+      label: "最大 Tick 数",
+      id: "app-max-ticks",
+      value: config.max_ticks ?? "",
+      type: "number",
+    }).wrapper
+  );
   agentSection.appendChild(agentGrid);
   configForm.appendChild(agentSection);
 
@@ -542,6 +565,15 @@ function buildAppConfig(base) {
     "Run seconds"
   );
   updated.memory_test = document.getElementById("app-memory-test").checked;
+  updated.auto_tick = document.getElementById("app-auto-tick").checked;
+  updated.tick_interval = readNumber(
+    document.getElementById("app-tick-interval").value || "1",
+    "Tick interval"
+  );
+  updated.max_ticks = readNumber(
+    document.getElementById("app-max-ticks").value || "0",
+    "Max ticks"
+  );
 
   updated.webui = updated.webui || {};
   updated.webui.host = document.getElementById("app-webui-host").value.trim();

@@ -2,7 +2,7 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Alicization: Run Demo (default)",
+      "label": "Alicization: Run CLI (interactive)",
       "type": "shell",
       "command": "python",
       "args": ["main.py"],
@@ -12,26 +12,10 @@
       "problemMatcher": []
     },
     {
-      "label": "Alicization: Run Demo (5s)",
+      "label": "Alicization: Run CLI (auto tick)",
       "type": "shell",
       "command": "python",
-      "args": ["main.py", "--run-seconds", "5"],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "Alicization: Run Demo (custom args)",
-      "type": "shell",
-      "command": "python",
-      "args": [
-        "main.py",
-        "--app-config-path",
-        "${input:appConfigPath}",
-        "--run-seconds",
-        "${input:runSeconds}"
-      ],
+      "args": ["main.py"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -41,56 +25,11 @@
       "label": "Alicization: Run Web UI (default)",
       "type": "shell",
       "command": "python",
-      "args": ["main.py", "--webui"],
+      "args": ["main.py"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
       "problemMatcher": []
-    },
-    {
-      "label": "Alicization: Run Web UI (custom host/port)",
-      "type": "shell",
-      "command": "python",
-      "args": [
-        "main.py",
-        "--webui",
-        "--app-config-path",
-        "${input:appConfigPath}",
-        "--webui-host",
-        "${input:webuiHost}",
-        "--webui-port",
-        "${input:webuiPort}"
-      ],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "problemMatcher": []
-    }
-  ],
-  "inputs": [
-    {
-      "id": "appConfigPath",
-      "type": "promptString",
-      "description": "Path to app config TOML",
-      "default": "config/app_config.toml"
-    },
-    {
-      "id": "runSeconds",
-      "type": "promptString",
-      "description": "Run duration in seconds (0 means no auto-stop)",
-      "default": "0"
-    },
-    {
-      "id": "webuiHost",
-      "type": "promptString",
-      "description": "Web UI host address",
-      "default": "127.0.0.1"
-    },
-    {
-      "id": "webuiPort",
-      "type": "promptString",
-      "description": "Web UI port",
-      "default": "8000"
     }
   ]
 }

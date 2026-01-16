@@ -34,13 +34,14 @@ LLM 生成目标 (Goal)
 - 目标被拆解为可执行的 tick 级动作，直到目标完成或中断
 - LLM 输出的动作指令需要进一步拆解为 tick 级子动作
 - 当前实现会先解析 LLM 动作计划，将动作排入队列并逐 tick 执行
+- 当行动队列为空时，每个 tick 会向 LLM 请求新的动作计划
 
 ### Tick 级动作
 
 - 行走：在世界中移动坐标
 - 收集：尝试捡起可收集 Object
 - 攻击：攻击其他 NPC
-- 交谈：与其他 NPC 交谈，调用 LLM
+- 交谈：与其他 NPC 交谈，触发目标 NPC 生成对话回应
 
 ### 动作拆解示例
 
@@ -78,4 +79,4 @@ execute_action(action: Action, state: dict) -> ActionResult
 ## 说明
 
 - 行为层负责校验 LLM 动作签名是否在允许列表内，并进行参数解析与拆解。
-- CLI demo 会在 `respond` 与 `/act` 时调用 LLM 生成动作计划并执行。
+- CLI demo 会在 `respond` 与 `/act` 时生成动作计划，行动在 `/tick` 或自动 tick 中逐步执行。

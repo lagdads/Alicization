@@ -53,9 +53,9 @@ Core Persona (Key-Value，免疫所有 GC)
 
 #### 记忆持久化 (Long-term Storage)
 
-- 对话记录（第一层）：`data/memory/<safe-name>-<hash>.log.jsonl`
-- 情节记忆向量库（第二层）：`data/memory/<safe-name>-<hash>.episodic.chroma/`
-- 核心人格快照（第三层）：`data/memory/<safe-name>-<hash>.core.json`
+- 对话记录（第一层）：`data/memory/<safe-name>/<safe-name>.log.jsonl`
+- 情节记忆向量库（第二层）：`data/memory/<safe-name>/<safe-name>.episodic.chroma/`
+- 核心人格快照（第三层）：`data/memory/<safe-name>/<safe-name>.core.json`
 - 启动时加载 Core Persona；Episodic 与对话记录由各自文件维护
 - 记忆变更后自动写回（对话追加写入，Episodic 写入向量库，Core Persona 更新快照）
 - 人设文件内容会写入 Core Persona 的 `persona_profile`，作为永久记忆的一部分
@@ -177,6 +177,7 @@ search(query: str, top_k: int) -> List[MemoryFragment]
 ```
 summarize_and_score(memory: str) -> Tuple[str, float]
 generate_intent(context: dict, memories: List[str]) -> str
+generate_reply(context: dict, memories: List[str]) -> str
 rag_query(query: str, memories: List[str]) -> str
 generate_actions(context: dict, memories: List[str]) -> dict
 ```
@@ -254,18 +255,20 @@ LLM 分为三类用途：
 "routing": {
   "default": {
     "summarize_and_score": "fast",
-    "generate_intent": "advanced"
+    "generate_intent": "advanced",
+    "generate_reply": "advanced"
   },
   "memory": {
     "summarize_and_score": "fast"
   },
   "behavior": {
-    "generate_intent": "advanced"
+    "generate_intent": "advanced",
+    "generate_reply": "advanced"
   }
 }
 ```
 
 说明：
 
-- `routing.<module>.<task>` 目前支持的 task：`summarize_and_score`、`generate_intent`
+- `routing.<module>.<task>` 目前支持的 task：`summarize_and_score`、`generate_intent`、`generate_reply`、`generate_actions`
 - `rag_query` 默认由 `embed_api` 驱动的相似度排序实现，不参与 fast/advanced 路由

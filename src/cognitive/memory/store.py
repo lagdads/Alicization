@@ -19,6 +19,10 @@ try:
     import chromadb
 except ImportError:  # pragma: no cover - handled by runtime check
     chromadb = None
+try:
+    from chromadb.errors import InvalidArgumentError
+except Exception:  # pragma: no cover - optional dependency
+    InvalidArgumentError = None
 
 
 @dataclass
@@ -212,12 +216,19 @@ class ChromaVectorStore:
         if chromadb is None:
             raise RuntimeError("chromadb is required. Install it with `pip install chromadb`.")
         self.embedder = embedder
+        self.collection_name = collection_name
         if persist_path:
             persist_path.mkdir(parents=True, exist_ok=True)
             client = chromadb.PersistentClient(path=str(persist_path))
         else:
             client = chromadb.Client()
+        self.client = client
         self.collection = client.get_or_create_collection(name=collection_name)
+
+    def _reset_collection(self) -> None:
+        """重建集合以匹配当前 embedding 维度。"""
+        self.client.delete_collection(name=self.collection_name)
+        self.collection = self.client.get_or_create_collection(name=self.collection_name)
 
     def _to_fragment(
         self,
@@ -257,12 +268,45 @@ class ChromaVectorStore:
             "current_strength": fragment.current_strength,
             "last_accessed_at": fragment.last_accessed_at,
         }
-        self.collection.upsert(
-            ids=[str(fragment.id)],
-            documents=[fragment.content],
-            metadatas=[metadata],
-            embeddings=[fragment.embedding],
-        )
+        try:
+            self.collection.upsert(
+                ids=[str(fragment.id)],
+                documents=[fragment.content],
+                metadatas=[metadata],
+                embeddings=[fragment.embedding],
+            )
+        except Exception as exc:
+            if InvalidArgumentError and isinstance(exc, InvalidArgumentError):
+                logging.warning(
+                    "Memory collection embedding dim mismatch; rebuilding collection."
+                )
+                existing = self.collection.get(include=["documents", "metadatas"])
+                ids = existing.get("ids") or []
+                documents = existing.get("documents") or []
+                metadatas = existing.get("metadatas") or []
+                self._reset_collection()
+                if len(documents) != len(ids):
+                    documents = ["" for _ in ids]
+                if len(metadatas) != len(ids):
+                    metadatas = [{} for _ in ids]
+                if ids:
+                    embeddings = [
+                        self.embedder(content or "") for content in documents
+                    ]
+                    self.collection.upsert(
+                        ids=ids,
+                        documents=documents,
+                        metadatas=metadatas,
+                        embeddings=embeddings,
+                    )
+                self.collection.upsert(
+                    ids=[str(fragment.id)],
+                    documents=[fragment.content],
+                    metadatas=[metadata],
+                    embeddings=[fragment.embedding],
+                )
+            else:
+                raise
         return fragment.id
 
     def delete(self, fragment_id: uuid.UUID) -> None:

@@ -8,7 +8,7 @@
 
 **Alicization World** 是一个 AI Native 云端游戏引擎的 MVP 原型。核心理念是 **"世界即记忆"** —— 一个由 AI 生成、驱动，且拥有拟人化记忆衰减与成长机制的虚拟社会。
 
-当前版本提供可运行的最小骨架实现，默认使用内存向量库与简易 LLM Stub，方便后续替换为真实服务。
+当前版本提供可运行的最小骨架实现，默认使用 OpenAI 配置并从 `.env` 读取模型与地址，Stub 作为备用实现。
 
 ### 核心特性
 
@@ -48,15 +48,15 @@ python main.py
 python main.py --run-seconds 5
 ```
 
-如需接入 OpenAI，请先设置 `OPENAI_API_KEY` 并使用示例配置：
+默认应用配置已指向 OpenAI 版本 LLM 配置，请先设置 `OPENAI_API_KEY`（或在 `.env` 配置各 provider 的 API key）：
 
 ```bash
 export OPENAI_API_KEY="your_api_key"
 python main.py --app-config-path config/app_config.toml
 ```
 
-如需自定义 OpenAI 源地址，可在 `config/llm_config.openai.toml` 的各 provider 中设置 `base_url`，并在 `config/app_config.toml` 中指向该配置。
-支持从 `.env` 读取 `*_env` 字段（如 `FAST_API_KEY`、`FAST_WEB`、`FAST_MODEL`）。
+模型与源地址默认从 `.env` 的 `*_MODEL`/`*_WEB` 读取（如 `FAST_MODEL`、`FAST_WEB`）。
+如需硬编码，可在 `config/llm_config.openai.toml` 中补充 `model`/`base_url` 并在 `config/app_config.toml` 指向该配置。
 
 ### Web UI (配置编辑与运行)
 
@@ -80,15 +80,25 @@ python web/server.py
 - `--app-config-path`：应用配置路径（默认 `config/app_config.toml`）
 - `--run-seconds`：覆盖应用配置中的演示秒数
 - `--memory-test`：覆盖应用配置，执行记忆测试
+- `--auto-tick`：在 CLI 模式中启用自动 tick 循环
+- `--tick-interval`：覆盖自动 tick 间隔秒数
 - `--webui`：启动本地 Web UI（不运行 demo loop）
 - `--webui-host`：覆盖 Web UI 监听地址
 - `--webui-port`：覆盖 Web UI 监听端口
+
+`config/app_config.toml` 支持 `auto_tick`、`tick_interval` 与 `max_ticks`，用于配置 CLI 自动 tick 的默认行为。
+默认 `auto_tick = true`，运行后会进入自动 tick 循环（自动模式不接收命令行指令）。非交互环境下会跳过输入提示，避免 EOF 退出。
+`max_ticks` 默认为 30，设置为 0 或负数表示不限制。
+`mode = "webui"` 可让启动时默认进入 Web UI（等效 `--webui`）。
 
 ### CLI 使用速览
 
 - `/list` 查看 AI 列表
 - `/use <name>` 切换对话对象
-- `/act [name] <goal>` 触发一次行动
+- `/act [name] <goal>` 规划行动并加入队列
+- `/tick` 进入下一 tick 并执行行动
+- `/state [name]` 查看当前状态
+- `/lore [name]` 查看世界观概要
 - `@<name> <message>` 对指定 AI 说话
 
 ## 项目结构
@@ -112,7 +122,8 @@ python web/server.py
 
 - `config/knowledge_graph.toml`: 初始知识树定义
 - `data/world_lore.toml`: 世界观知识定义
-- `config/llm_config.toml`: LLM 分组配置（embedding/fast/advanced）
+- `config/llm_config.toml`: LLM 分组配置（stub 版本）
+- `config/llm_config.openai.toml`: LLM 分组配置（OpenAI/兼容 API，从 `.env` 读取）
 - `data/personas/*.toml`: Agent/NPC 人设与记忆参数
 
 ## 文档索引
@@ -172,13 +183,15 @@ python web/server.py
 ### Module C: CLI 交互 (Multi-Agent Console)
 
 - 提供多 Agent 对话与指令输入
-- `/act` 触发一次 GOAP 行动
+- `/act` 规划行动并加入队列
+- `/tick` 执行下一步行动
+- `/state` 展示当前状态
 - `/lore` 展示世界观概要
 
 ## 实现说明
 
 - 向量库默认实现为内存检索（可替换为 ChromaDB 适配器）
-- LLM 接口默认实现为 Stub（可替换为真实 LLM 服务）
+- LLM 接口提供 Stub 备用实现（可替换为真实 LLM 服务）
 - 人设记忆配置键：`promotion_threshold`、`decay_rate`、`forget_threshold`、`max_strength`（见 `data/personas/default.toml`）
 - LLM 分组配置键：`providers.embed_api`、`providers.fast_api`、`providers.advanced_api`（见 `config/llm_config.toml`）
 - 模块路由配置：`routing.<module>.<task>`，用于指定模块使用 fast/advanced（见 `config/llm_config.toml`）

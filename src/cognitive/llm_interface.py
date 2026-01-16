@@ -36,6 +36,11 @@ class LLMInterface(abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
+    async def generate_reply(self, context: dict, memories: List[str]) -> str:
+        """根据上下文与记忆生成对话回应。"""
+        raise NotImplementedError
+
+    @abc.abstractmethod
     async def rag_query(self, query: str, memories: List[str]) -> str:
         """根据检索记忆回答问题。"""
         raise NotImplementedError
@@ -77,6 +82,11 @@ class LLMGroup(LLMInterface):
         """路由到对应 API 生成意图。"""
         api = self._select_api("generate_intent", self.default_module)
         return await api.generate_intent(context, memories)
+
+    async def generate_reply(self, context: dict, memories: List[str]) -> str:
+        """路由到对应 API 生成回应。"""
+        api = self._select_api("generate_reply", self.default_module)
+        return await api.generate_reply(context, memories)
 
     async def rag_query(self, query: str, memories: List[str]) -> str:
         """使用 embedding 进行记忆检索并返回文本。"""
@@ -127,6 +137,11 @@ class LLMModuleProxy(LLMInterface):
         api = self.group._select_api("generate_intent", self.module_name)
         return await api.generate_intent(context, memories)
 
+    async def generate_reply(self, context: dict, memories: List[str]) -> str:
+        """模块内对话回应生成。"""
+        api = self.group._select_api("generate_reply", self.module_name)
+        return await api.generate_reply(context, memories)
+
     async def rag_query(self, query: str, memories: List[str]) -> str:
         """模块内 RAG 查询。"""
         return await self.group.rag_query(query, memories)
@@ -174,6 +189,25 @@ class StubLLM(LLMInterface):
         if memories:
             return f"Explore based on memory: {memories[0]}"
         return "Explore environment and record new memories"
+
+    async def generate_reply(self, context: dict, memories: List[str]) -> str:
+        """使用规则生成对话回应。"""
+        speaker_type = str(context.get("speaker_type", "")).lower()
+        speaker = str(context.get("speaker", "")).strip() or "对方"
+        message = str(context.get("message", "")).strip()
+        if not message:
+            return "……"
+        if any(token in message for token in ("?", "？", "吗")):
+            if speaker_type == "npc":
+                return f"{speaker}，我也在思考这个问题。"
+            return "我也在思考这个问题。"
+        if "谢谢" in message:
+            return "不必客气。"
+        if "你好" in message or "您好" in message:
+            if speaker_type == "npc":
+                return f"你好，{speaker}。"
+            return "你好，旅人。"
+        return "我明白了。"
 
     async def rag_query(self, query: str, memories: List[str]) -> str:
         """返回截断后的记忆列表。"""
@@ -537,6 +571,40 @@ class OpenAILLM(LLMInterface):
             return cleaned
         return _fallback_intent(context, memories)
 
+    async def generate_reply(self, context: dict, memories: List[str]) -> str:
+        """生成 NPC 对话回应。"""
+        speaker_type = str(context.get("speaker_type", "player"))
+        speaker = str(context.get("speaker", "旅人")).strip() or "旅人"
+        system_prompt = (
+            "You are an in-world NPC in a fantasy world. "
+            "Reply to the user's message as spoken dialogue. "
+            "Stay within the world; do not reference other IPs or real-world brands. "
+            "Do not mention intents, plans, actions, or system details. "
+            "No meta commentary, no policy/safety text, no mention of being an AI. "
+            "Use Chinese. Output plain text only."
+        )
+        context_block = self._format_context(context)
+        memory_block = self._build_memory_block(memories)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": f"SpeakerType: {speaker_type}; Speaker: {speaker}",
+            },
+            {"role": "user", "content": f"Context:\n{context_block}"},
+            {"role": "user", "content": f"Memories:\n{memory_block}"},
+            {"role": "user", "content": "Task: Reply with the NPC's spoken response only."},
+        ]
+        try:
+            reply = await self._chat_messages(messages)
+        except Exception as exc:
+            self.logger.warning("OpenAI reply failed: %s", exc)
+            return await self.fallback.generate_reply(context, memories)
+        reply = reply.strip()
+        if not reply:
+            return await self.fallback.generate_reply(context, memories)
+        return reply
+
     async def rag_query(self, query: str, memories: List[str]) -> str:
         """基于记忆块回答查询问题。"""
         if not memories:
@@ -563,6 +631,7 @@ class OpenAILLM(LLMInterface):
             "move_to(x=0, y=0), scan_nearby(tag=\"\"), find_item(item_type=\"\"), "
             "pickup(object_id=\"\"), attack(target_id=\"\"), talk(target_id=\"\", topic=\"\"), "
             "gather(resource_id=\"\"), wait(ticks=1). "
+            "Avoid repeating the immediately previous successful action unless needed. "
             "Use Chinese for goal, but keep actions in function signature format."
         )
         context_block = self._format_context(context)

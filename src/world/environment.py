@@ -12,7 +12,7 @@ from src.world.object import Destiny, Object
 class Environment:
     """世界环境容器，维护实体与时间。"""
 
-    TICKS_PER_DAY = 24
+    TICKS_PER_DAY = 5
 
     def __init__(self, world_map: Optional[WorldMap] = None) -> None:
         """初始化环境状态。"""

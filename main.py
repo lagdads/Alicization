@@ -8,8 +8,10 @@ import hashlib
 import json
 import logging
 import re
+import sys
 import time
 import toml
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -26,8 +28,9 @@ from src.cognitive.knowledge.tree import KnowledgeBase
 from src.cognitive.knowledge.worldview import WorldviewKnowledge
 from src.cognitive.llm_interface import LLMInterface, build_llm_group
 from src.cognitive.memory.store import MemoryManager
+from src.world.environment import Environment
 
-DEFAULT_AGENT_NAMES = ["Alice", "Boris", "Celia"]
+DEFAULT_AGENT_NAMES = ["Alice"]
 DEFAULT_AGENT_STATE: Dict[str, Any] = {
     "has_wood": False,
     "has_fire": False,
@@ -50,7 +53,8 @@ HELP_TEXT = """命令帮助:
   /exit               退出当前对话
   /state [name]       查看角色状态
   /lore [name]        查看世界观概要
-  /act <goal>         触发当前角色行动 (goal: action 名称或 key=value)
+  /act <goal>         规划当前角色行动 (goal: action 名称或 key=value)
+  /tick               进入下一 tick 并执行行动
   /save [label]       保存当前进度
   /quit               退出程序
 """
@@ -90,6 +94,9 @@ class ChatAgent:
         self.state = state
         self.behavior_llm = behavior_llm
         self.pending_actions: List[BehaviorAction] = []
+        self.last_action: Optional[BehaviorAction] = None
+        self.last_action_success: Optional[bool] = None
+        self.repeat_action_count = 0
 
     def introduce(self) -> str:
         """返回含世界观摘要的自我介绍。"""
@@ -99,35 +106,55 @@ class ChatAgent:
         return f"我是 {self.name}，{self.description}。"
 
     async def respond(self, message: str) -> str:
-        """基于记忆检索与意图生成回应。"""
+        """基于记忆检索生成回应。"""
+        return await self._reply_to_message(
+            speaker_name="player",
+            speaker_type="player",
+            message=message,
+            log_prefix="User",
+        )
+
+    async def respond_to_npc(self, speaker_name: str, message: str) -> str:
+        """响应来自其他 NPC 的对话。"""
+        return await self._reply_to_message(
+            speaker_name=speaker_name,
+            speaker_type="npc",
+            message=message,
+            log_prefix=speaker_name,
+        )
+
+    async def _reply_to_message(
+        self,
+        speaker_name: str,
+        speaker_type: str,
+        message: str,
+        log_prefix: str,
+    ) -> str:
         await self.memory.add_sensory_input(
-            f"User: {message}", force_consolidate=True
+            f"{log_prefix}: {message}", force_consolidate=True
         )
         memories = self.memory.retrieve_and_reinforce(message, top_k=3)
         memory_texts = [fragment.content for fragment in memories]
-        intent = await self.behavior_llm.generate_intent(
-            {"goal": "respond"}, memory_texts
-        )
-        if not self.pending_actions:
-            await self._queue_actions("respond", message, memory_texts)
-        action_outcome = await self._execute_next_action()
         knowledge_hint = self._knowledge_hint(message)
         worldview_hint = self._worldview_hint(message)
-
-        lines = [f"身份: {self.description}"]
-        if worldview_hint:
-            lines.append(f"世界观: {worldview_hint}")
+        context = {
+            "message": message,
+            "name": self.name,
+            "description": self.description,
+            "state": self.state,
+            "speaker": speaker_name,
+            "speaker_type": speaker_type,
+        }
         if knowledge_hint:
-            lines.append(f"知识: {knowledge_hint}")
-        lines.append(f"意图: {intent}")
-        if action_outcome:
-            action, result = action_outcome
-            lines.append(
-                f"行动: {action.name} | {self._format_action_result(action, result)}"
-            )
-        if memory_texts:
-            lines.append(f"记忆: {' / '.join(memory_texts)}")
-        return "\n".join(lines)
+            context["knowledge"] = knowledge_hint
+        if worldview_hint:
+            context["worldview"] = worldview_hint
+        reply = await self.behavior_llm.generate_reply(context, memory_texts)
+        reply = reply.strip() or "……"
+        await self.memory.add_sensory_input(f"{self.name}: {reply}")
+        if not self.pending_actions:
+            await self._queue_actions("respond", message, memory_texts)
+        return reply
 
     async def act_once(self, goal_token: str) -> ActionResult:
         """为目标执行一次行动并返回结果。"""
@@ -155,6 +182,12 @@ class ChatAgent:
         )
         return ActionResult(action.name, success, reason, {"state": dict(self.state)})
 
+    async def plan_actions(self, goal_token: str) -> List[BehaviorAction]:
+        """为目标生成动作计划并写入队列。"""
+        memories = self.memory.retrieve_and_reinforce(goal_token, top_k=3)
+        memory_texts = [fragment.content for fragment in memories]
+        return await self._queue_actions(goal_token, goal_token, memory_texts)
+
     async def _queue_actions(
         self, goal: str, message: str, memory_texts: List[str]
     ) -> List[BehaviorAction]:
@@ -174,6 +207,20 @@ class ChatAgent:
             return None
         action = self.pending_actions.pop(0)
         result = execute_action(action, self.state)
+        same_action = (
+            self.last_action
+            and self.last_action.name == action.name
+            and self.last_action.params == action.params
+        )
+        if same_action:
+            self.repeat_action_count += 1
+        else:
+            self.repeat_action_count = 1
+        self.last_action = action
+        self.last_action_success = result.success
+        self.state["last_action"] = {"name": action.name, "params": dict(action.params)}
+        self.state["last_action_success"] = result.success
+        self.state["last_action_repeat"] = self.repeat_action_count
         await self.memory.add_sensory_input(
             f"Action: {action.name}, params={action.params}, result={result.info}",
             force_consolidate=True,
@@ -209,6 +256,25 @@ class ChatAgent:
             return matched.content
         return None
 
+    async def tick(
+        self,
+    ) -> Optional[tuple[BehaviorAction, BehaviorActionResult]]:
+        """推进一次 tick 并执行队列动作。"""
+        if not self.pending_actions:
+            memories = self.memory.retrieve_and_reinforce("tick", top_k=3)
+            memory_texts = [fragment.content for fragment in memories]
+            message = "tick"
+            if self.repeat_action_count >= 2 and self.last_action:
+                message = (
+                    f"连续重复了动作 {self.last_action.name}，请规划不同的下一步。"
+                )
+            await self._queue_actions("idle", message, memory_texts)
+        if not self.pending_actions:
+            self.pending_actions.append(
+                BehaviorAction(name="wait", params={"ticks": 1})
+            )
+        return await self._execute_next_action()
+
 
 def _load_config(path: str) -> Dict[str, Any]:
     """从 JSON/TOML 文件加载配置内容。"""
@@ -233,6 +299,9 @@ def _setup_logging() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # Suppress noisy AI client info logs during runtime.
+    for logger_name in ("openai", "httpx", "httpcore", "alicization.llm"):
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 
 def _parse_agent_names(raw: str) -> List[str]:
@@ -256,8 +325,8 @@ def _memory_path_for_agent(name: str) -> Path:
     safe = re.sub(r"[^A-Za-z0-9_-]+", "_", name.strip()).strip("_")
     if not safe:
         safe = "npc"
-    digest = hashlib.md5(name.encode("utf-8")).hexdigest()[:8]
-    return MEMORY_DIR / f"{safe}-{digest}.json"
+    agent_dir = MEMORY_DIR / safe
+    return agent_dir / f"{safe}.json"
 
 
 def _knowledge_path_for_agent(name: str) -> Path:
@@ -313,6 +382,34 @@ def _format_state(state: Dict[str, Any]) -> str:
     if not state:
         return "(empty)"
     return ", ".join(f"{key}={value}" for key, value in state.items())
+
+
+def _format_action_signature(action: BehaviorAction) -> str:
+    """格式化动作与参数为函数签名字符串。"""
+    if not action.params:
+        return action.name
+    params = ", ".join(f"{key}={value}" for key, value in action.params.items())
+    return f"{action.name}({params})"
+
+
+def _format_tick_action(
+    tick_count: int,
+    agent: ChatAgent,
+    action: BehaviorAction,
+    result: BehaviorActionResult,
+) -> str:
+    """格式化 tick 行动输出。"""
+    signature = _format_action_signature(action)
+    summary = agent._format_action_result(action, result)
+    return f"[Tick {tick_count}] {agent.name} 行动: {signature} | {summary}"
+
+
+def _build_talk_message(topic: str) -> str:
+    """为 NPC 对话构造提示文本。"""
+    cleaned = str(topic or "").strip()
+    if cleaned:
+        return f"关于{cleaned}，你怎么看？"
+    return "能聊聊吗？"
 
 
 def _save_game_snapshot(
@@ -417,106 +514,205 @@ def _build_agents(
     return agents
 
 
-async def _run_cli(agents: Dict[str, ChatAgent]) -> None:
+async def _run_cli(
+    agents: Dict[str, ChatAgent],
+    auto_tick: bool = False,
+    tick_interval: float = 1.0,
+    max_ticks: int = 0,
+) -> None:
     """运行多 Agent 交互式 CLI。"""
     names = list(agents.keys())
     if not names:
         print("未配置角色。")
         return
     active_name: Optional[str] = None
+    tick_count = 0
+    day_tick_count = 0
+    day_count = 0
+    ticks_per_day = Environment.TICKS_PER_DAY
+    tick_lock = asyncio.Lock()
+    stop_event = asyncio.Event()
+
+    async def _end_day(agent_list: List[ChatAgent]) -> None:
+        nonlocal day_count, day_tick_count
+        day_count += 1
+        day_tick_count = 0
+        for agent in agent_list:
+            await agent.memory.consolidate()
+            agent.memory.apply_decay()
+        print(f"第 {day_count} 天结束，记忆已更新。", flush=True)
+
+    async def advance_tick() -> None:
+        nonlocal tick_count, day_tick_count
+        async with tick_lock:
+            if max_ticks > 0 and tick_count >= max_ticks:
+                if auto_tick:
+                    print(f"已达到最大 tick: {max_ticks}，自动停止。", flush=True)
+                    stop_event.set()
+                else:
+                    print(f"已达到最大 tick: {max_ticks}。", flush=True)
+                return
+            tick_count += 1
+            agent_list = [agents[name] for name in names]
+            for idx, agent in enumerate(agent_list):
+                if len(agent_list) <= 1:
+                    continue
+                target_name = agent_list[(idx + 1) % len(agent_list)].name
+                placeholders = agent.state.setdefault("placeholders", {})
+                placeholders["npc_id"] = target_name
+                placeholders["target_id"] = target_name
+            outcomes = await asyncio.gather(
+                *(agent.tick() for agent in agent_list), return_exceptions=True
+            )
+            for agent, outcome in zip(agent_list, outcomes):
+                if isinstance(outcome, Exception):
+                    logging.getLogger("alicization").exception(
+                        "Tick failed for %s", agent.name, exc_info=outcome
+                    )
+                    continue
+                if not outcome:
+                    continue
+                action, result = outcome
+                print(_format_tick_action(tick_count, agent, action, result), flush=True)
+                if action.name == "talk" and result.success:
+                    info = result.info or {}
+                    target = str(info.get("target", "")).strip()
+                    if target and target in agents and target != agent.name:
+                        topic = str(info.get("topic", "")).strip()
+                        message = _build_talk_message(topic)
+                        reply = await agents[target].respond_to_npc(
+                            agent.name, message
+                        )
+                        print(f"{target}: {reply}", flush=True)
+            day_tick_count += 1
+            if ticks_per_day > 0 and day_tick_count >= ticks_per_day:
+                await _end_day(agent_list)
+
+    async def auto_tick_loop() -> None:
+        while not stop_event.is_set():
+            await advance_tick()
+            if tick_interval > 0:
+                await asyncio.sleep(tick_interval)
+
+    auto_task = None
+    if auto_tick:
+        auto_task = asyncio.create_task(auto_tick_loop())
 
     print("命令行已启动。输入 /help 查看命令。")
 
-    while True:
-        prompt_label = f"[{active_name}]> " if active_name else "> "
-        raw = (await _prompt(prompt_label)).strip()
-        if not raw:
-            continue
-        if raw.startswith("/"):
-            parts = raw.split(maxsplit=1)
-            command = parts[0]
-            arg = parts[1].strip() if len(parts) > 1 else ""
-            if command == "/quit":
-                print("已退出。")
-                break
-            if command == "/exit":
-                if active_name is None:
-                    print("未在对话中。")
-                else:
-                    active_name = None
-                continue
-            if command == "/help":
-                print(HELP_TEXT)
-                continue
-            if command == "/list":
-                print(", ".join(names))
-                continue
-            if command == "/use":
-                if not arg:
-                    print("用法: /use <name>")
-                    continue
-                if arg in agents:
-                    active_name = arg
-                else:
-                    print(f"未知角色: {arg}")
-                continue
-            if command == "/state":
-                target = arg or active_name
-                if not target:
-                    print("未选择角色。")
-                    continue
-                agent = agents.get(target)
-                if not agent:
-                    print(f"未知角色: {target}")
-                    continue
-                prefix = "状态" if target == active_name else f"{agent.name} 状态"
-                print(f"{prefix}: {_format_state(agent.state)}")
-                continue
-            if command == "/lore":
-                target = arg or active_name
-                if not target:
-                    print("未选择角色。")
-                    continue
-                agent = agents.get(target)
-                if not agent:
-                    print(f"未知角色: {target}")
-                    continue
-                intro = agent.worldview.intro()
-                if intro:
-                    prefix = "世界观" if target == active_name else f"{agent.name} 世界观"
-                    print(f"{prefix}: {intro}")
-                else:
-                    print("世界观为空。")
-                continue
-            if command == "/act":
-                if not active_name:
-                    print("未选择角色。")
-                    continue
-                if not arg:
-                    print("用法: /act <goal>")
-                    continue
-                agent = agents[active_name]
-                result = await agent.act_once(arg)
-                if result.action:
-                    line = f"行动: {result.action} | {result.reason}"
-                else:
-                    line = f"行动失败: {result.reason}"
-                line += f" | 状态: {_format_state(agent.state)}"
-                print(line)
-                continue
-            if command == "/save":
-                path = _save_game_snapshot(agents, arg or None)
-                print(f"已存档: {path.as_posix()}")
-                continue
-            print("未知命令。")
-            continue
+    async def _cleanup() -> None:
+        stop_event.set()
+        if auto_task:
+            auto_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await auto_task
 
-        if active_name is None:
-            print("请先 /use <name>。")
-            continue
-        agent = agents[active_name]
-        response = await agent.respond(raw)
-        print(response)
+    if auto_tick:
+        print("自动 tick 模式已启动，不接收命令行指令。按 Ctrl+C 退出。")
+        try:
+            await stop_event.wait()
+        finally:
+            await _cleanup()
+        return
+
+    try:
+        while True:
+            prompt_label = f"[{active_name}]> " if active_name else "> "
+            try:
+                raw = (await _prompt(prompt_label)).strip()
+            except EOFError:
+                print("检测到输入结束，退出交互模式。")
+                break
+            if not raw:
+                continue
+            if raw.startswith("/"):
+                parts = raw.split(maxsplit=1)
+                command = parts[0]
+                arg = parts[1].strip() if len(parts) > 1 else ""
+                if command == "/quit":
+                    print("已退出。")
+                    break
+                if command == "/exit":
+                    if active_name is None:
+                        print("未在对话中。")
+                    else:
+                        active_name = None
+                    continue
+                if command == "/help":
+                    print(HELP_TEXT)
+                    continue
+                if command == "/list":
+                    print(", ".join(names))
+                    continue
+                if command == "/use":
+                    if not arg:
+                        print("用法: /use <name>")
+                        continue
+                    if arg in agents:
+                        active_name = arg
+                    else:
+                        print(f"未知角色: {arg}")
+                    continue
+                if command == "/state":
+                    target = arg or active_name
+                    if not target:
+                        print("未选择角色。")
+                        continue
+                    agent = agents.get(target)
+                    if not agent:
+                        print(f"未知角色: {target}")
+                        continue
+                    prefix = "状态" if target == active_name else f"{agent.name} 状态"
+                    print(f"{prefix}: {_format_state(agent.state)}")
+                    continue
+                if command == "/lore":
+                    target = arg or active_name
+                    if not target:
+                        print("未选择角色。")
+                        continue
+                    agent = agents.get(target)
+                    if not agent:
+                        print(f"未知角色: {target}")
+                        continue
+                    intro = agent.worldview.intro()
+                    if intro:
+                        prefix = "世界观" if target == active_name else f"{agent.name} 世界观"
+                        print(f"{prefix}: {intro}")
+                    else:
+                        print("世界观为空。")
+                    continue
+                if command == "/act":
+                    if not active_name:
+                        print("未选择角色。")
+                        continue
+                    if not arg:
+                        print("用法: /act <goal>")
+                        continue
+                    agent = agents[active_name]
+                    actions = await agent.plan_actions(arg)
+                    if actions:
+                        print(f"行动计划已加入队列（{len(actions)}）")
+                    else:
+                        print("未生成可执行行动。")
+                    continue
+                if command == "/tick":
+                    await advance_tick()
+                    continue
+                if command == "/save":
+                    path = _save_game_snapshot(agents, arg or None)
+                    print(f"已存档: {path.as_posix()}")
+                    continue
+                print("未知命令。")
+                continue
+
+            if active_name is None:
+                print("请先 /use <name>。")
+                continue
+            agent = agents[active_name]
+            response = await agent.respond(raw)
+            print(response)
+    finally:
+        await _cleanup()
 
 
 async def _run_demo(agents: Dict[str, ChatAgent], run_seconds: int) -> None:
@@ -624,6 +820,25 @@ async def main_async(args: argparse.Namespace) -> None:
     memory_test = bool(app_config.get("memory_test", False))
     if args.memory_test:
         memory_test = True
+    auto_tick = bool(app_config.get("auto_tick", False))
+    if args.auto_tick:
+        auto_tick = True
+    tick_interval = app_config.get("tick_interval", 1.0)
+    if args.tick_interval is not None:
+        tick_interval = args.tick_interval
+    max_ticks = app_config.get("max_ticks", 0)
+    if args.max_ticks is not None:
+        max_ticks = args.max_ticks
+    try:
+        max_ticks = int(max_ticks)
+    except (TypeError, ValueError):
+        max_ticks = 0
+    try:
+        tick_interval = float(tick_interval)
+    except (TypeError, ValueError):
+        tick_interval = 1.0
+    if tick_interval <= 0:
+        tick_interval = 1.0
     run_seconds = app_config.get("run_seconds", 0)
     if args.run_seconds is not None:
         run_seconds = args.run_seconds
@@ -632,7 +847,12 @@ async def main_async(args: argparse.Namespace) -> None:
     elif run_seconds:
         await _run_demo(agents, int(run_seconds))
     else:
-        await _run_cli(agents)
+        await _run_cli(
+            agents,
+            auto_tick=auto_tick,
+            tick_interval=tick_interval,
+            max_ticks=max_ticks,
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -653,6 +873,23 @@ def parse_args() -> argparse.Namespace:
         "--memory-test",
         action="store_true",
         help="Override to run memory test",
+    )
+    parser.add_argument(
+        "--auto-tick",
+        action="store_true",
+        help="Enable automatic tick loop in CLI mode",
+    )
+    parser.add_argument(
+        "--tick-interval",
+        type=float,
+        default=None,
+        help="Override auto tick interval in seconds",
+    )
+    parser.add_argument(
+        "--max-ticks",
+        type=int,
+        default=None,
+        help="Stop the auto tick loop after the given number of ticks",
     )
     parser.add_argument(
         "--webui",
@@ -676,10 +913,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     """程序入口，支持 Web UI 模式。"""
     args = parse_args()
+    app_config = _load_app_config(args.app_config_path)
+    mode = str(app_config.get("mode", "cli")).lower()
     if args.webui:
+        mode = "webui"
+    if mode == "webui":
         from web.server import run_server
 
-        app_config = _load_app_config(args.app_config_path)
         webui_config = app_config.get("webui", {})
         host = args.webui_host or webui_config.get("host", "127.0.0.1")
         port = args.webui_port or webui_config.get("port", 8000)

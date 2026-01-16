@@ -1,11 +1,27 @@
+# 基础路径配置
 knowledge_path = "config/knowledge_graph.toml"
 worldview_path = "data/world_lore.toml"
-llm_config_path = "config/llm_config.toml"
+llm_config_path = "config/llm_config.openai.toml"
 persona_path = "data/personas/default.toml"
-agents = ["Alice", "Boris", "Celia"]
+
+# 运行模式: "cli" 或 "webui"
+mode = "cli"
+
+# 角色配置
+agents = ["Alice"]
+
+# CLI 行为与测试开关
+# run_seconds > 0 时进入演示模式并在指定秒数后停止
 run_seconds = 0
 memory_test = false
 
+# 自动 tick 配置（仅 CLI 生效）
+auto_tick = true
+tick_interval = 1.0
+# max_ticks = 0 表示不限制
+max_ticks = 30
+
 [webui]
+# Web UI 服务地址
 host = "127.0.0.1"
 port = 8000

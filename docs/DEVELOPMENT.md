@@ -93,7 +93,7 @@ alicization_world/
 
 - `src/` 为顶层包，运行 `python main.py` 时可直接导入 `src.*`
 - 默认提供内存向量库实现，后续可替换为 ChromaDB 适配器
-- LLM 接口默认提供 Stub 实现，后续可替换为真实 LLM 服务
+- LLM 接口提供 Stub 备用实现，可替换为真实 LLM 服务
 - **注释要求**：每个函数与类必须有注释（Python 使用 docstring；JS 使用 JSDoc），在新增或修改时同步补全。
 
 ### 3.3 注释规范
@@ -418,19 +418,21 @@ class Entity:
   "routing": {
     "default": {
       "summarize_and_score": "fast",
-      "generate_intent": "advanced"
+      "generate_intent": "advanced",
+      "generate_reply": "advanced"
     },
     "memory": {
       "summarize_and_score": "fast"
     },
     "behavior": {
-      "generate_intent": "advanced"
+      "generate_intent": "advanced",
+      "generate_reply": "advanced"
     }
   }
 }
 ```
 
-如需接入 OpenAI，可使用 `config/llm_config.openai.toml` 作为模板，并设置环境变量：
+默认应用配置已指向 `config/llm_config.openai.toml`，并需要设置环境变量（模型与源地址从 `.env` 读取）：
 
 ```bash
 export OPENAI_API_KEY="your_api_key"
@@ -443,11 +445,9 @@ export OPENAI_API_KEY="your_api_key"
   "providers": {
     "embed_api": {
       "type": "openai",
-      "model": "text-embedding-3-small",
       "model_env": "EMBEDDING_MODEL",
       "api_key_env": "EMBEDDING_API_KEY",
-      "base_url_env": "EMBEDDING_WEB",
-      "base_url": "https://api.openai.com/v1"
+      "base_url_env": "EMBEDDING_WEB"
     }
   }
 }
@@ -469,7 +469,11 @@ export OPENAI_API_KEY="your_api_key"
    - 输入: 当前上下文和检索到的记忆
    - 输出: 意图描述（自然语言）
 
-3. **`rag_query(query: str, memories: List[str]) -> str`**
+3. **`generate_reply(context: dict, memories: List[str]) -> str`**
+   - 输入: 当前上下文和检索到的记忆
+   - 输出: NPC 对话回应文本
+
+4. **`rag_query(query: str, memories: List[str]) -> str`**
    - 输入: 查询和记忆列表
    - 输出: 基于 RAG 的回答
 
@@ -516,9 +520,16 @@ export OPENAI_API_KEY="your_api_key"
 - `--app-config-path`: 应用配置路径（默认 `config/app_config.toml`）
 - `--run-seconds`: 覆盖应用配置中的示例运行时长
 - `--memory-test`: 覆盖应用配置，执行记忆测试
+- `--auto-tick`: 在 CLI 模式中启用自动 tick 循环
+- `--tick-interval`: 覆盖自动 tick 间隔秒数
 - `--webui`: 启动本地 Web UI（不运行 demo loop）
 - `--webui-host`: 覆盖 Web UI 监听地址
 - `--webui-port`: 覆盖 Web UI 监听端口
+
+应用配置 `config/app_config.toml` 可设置 `auto_tick`、`tick_interval` 与 `max_ticks` 作为默认自动 tick 行为。
+默认 `auto_tick = true`，CLI 启动后会进入自动 tick 循环（自动模式不接收命令行指令）。非交互环境下会跳过输入提示。
+`max_ticks` 默认为 30，设置为 0 或负数表示不限制。
+`mode = "webui"` 可让启动时默认进入 Web UI（等效 `--webui`）。
 
 ### 10.1 Web UI 使用说明
 
