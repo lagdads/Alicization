@@ -178,7 +178,7 @@ search(query: str, top_k: int) -> List[MemoryFragment]
 summarize_and_score(memory: str) -> Tuple[str, float]
 generate_intent(context: dict, memories: List[str]) -> str
 rag_query(query: str, memories: List[str]) -> str
-generate_actions(context: dict, memories: List[str]) -> str
+generate_actions(context: dict, memories: List[str]) -> dict
 ```
 
 #### 行为调用格式（函数参数风格 JSON）
@@ -194,6 +194,8 @@ LLM 输出为 JSON，包含 `actions` 列表。每个动作必须是可直接调
   ]
 }
 ```
+
+生成动作时可附带当前状态与目标文本，行为层会解析占位符并逐 tick 执行。
 
 ### 行为工具提示模板
 

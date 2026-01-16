@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import tomllib
 import toml
 import re
 import subprocess
@@ -39,8 +38,7 @@ def _read_text(path: Path) -> str:
 
 def _read_toml(path: Path) -> Dict[str, Any]:
     """读取 TOML 配置为字典。"""
-    with path.open("rb") as handle:
-        return tomllib.load(handle)
+    return toml.load(path)
 
 
 def _write_toml_pretty(path: Path, raw_text: str) -> None:
@@ -68,7 +66,7 @@ def _persona_label(path: Path) -> str:
     """从人设文件读取展示标签。"""
     try:
         data = _read_toml(path)
-    except (tomllib.TOMLDecodeError, OSError):
+    except (toml.TomlDecodeError, OSError):
         return path.stem
     return data.get("name") or path.stem
 
@@ -210,7 +208,7 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
             try:
                 _write_toml_pretty(config["path"], content)
-            except (json.JSONDecodeError, tomllib.TOMLDecodeError) as exc:
+            except (json.JSONDecodeError, toml.TomlDecodeError) as exc:
                 self._send_api_error(400, f"JSON 格式错误: {exc}")
                 return
             self._send_json(200, {"ok": True})
@@ -243,7 +241,7 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
             try:
                 _write_toml_pretty(path, content)
-            except (json.JSONDecodeError, tomllib.TOMLDecodeError) as exc:
+            except (json.JSONDecodeError, toml.TomlDecodeError) as exc:
                 self._send_api_error(400, f"JSON 格式错误: {exc}")
                 return
             self._send_json(
