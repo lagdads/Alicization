@@ -40,6 +40,11 @@ class LLMInterface(abc.ABC):
         """根据检索记忆回答问题。"""
         raise NotImplementedError
 
+    @abc.abstractmethod
+    async def generate_actions(self, context: dict, memories: List[str]) -> Dict[str, Any]:
+        """根据上下文生成动作计划。"""
+        raise NotImplementedError
+
 
 class LLMGroup(LLMInterface):
     """LLM 分组路由器，按任务选择 API。"""
@@ -98,6 +103,11 @@ class LLMGroup(LLMInterface):
             return self.advanced_api
         return self.fast_api
 
+    async def generate_actions(self, context: dict, memories: List[str]) -> Dict[str, Any]:
+        """路由到对应 API 生成动作计划。"""
+        api = self._select_api("generate_actions", self.default_module)
+        return await api.generate_actions(context, memories)
+
 
 class LLMModuleProxy(LLMInterface):
     """按模块代理到 LLMGroup 的路由选择。"""
@@ -120,6 +130,11 @@ class LLMModuleProxy(LLMInterface):
     async def rag_query(self, query: str, memories: List[str]) -> str:
         """模块内 RAG 查询。"""
         return await self.group.rag_query(query, memories)
+
+    async def generate_actions(self, context: dict, memories: List[str]) -> Dict[str, Any]:
+        """模块内动作计划生成。"""
+        api = self.group._select_api("generate_actions", self.module_name)
+        return await api.generate_actions(context, memories)
 
 
 def _stub_summarize_and_score(memory: str) -> Tuple[str, float]:
@@ -165,6 +180,30 @@ class StubLLM(LLMInterface):
         if not memories:
             return "No relevant memories found"
         return "\n".join(memories[:3])
+
+    async def generate_actions(self, context: dict, memories: List[str]) -> Dict[str, Any]:
+        """使用规则返回简单动作计划。"""
+        message = str(context.get("message", ""))
+        goal = str(context.get("goal", ""))
+        action = "wait(ticks=1)"
+        if "移动" in message or "走" in message:
+            action = "move_to(x=0, y=0)"
+        elif "等待" in message or "休息" in message:
+            action = "wait(ticks=1)"
+        elif "攻击" in message:
+            action = "attack(target_id=\"$enemy_id\")"
+        elif "交谈" in message or "对话" in message:
+            action = "talk(target_id=\"$npc_id\", topic=\"greeting\")"
+        elif "拾取" in message or "拿起" in message:
+            action = "pickup(object_id=\"$object_id\")"
+        elif "寻找" in message or "扫描" in message:
+            action = "scan_nearby(tag=\"item\")"
+        elif "采集" in message or "收集" in message:
+            action = "gather(resource_id=\"wood\")"
+        elif "火" in message and "木" in message:
+            action = "gather(resource_id=\"wood\")"
+        goal_text = goal or "回应"
+        return {"goal": goal_text, "actions": [action]}
 
 
 def _load_openai_clients() -> Tuple[Any, Any]:
@@ -350,6 +389,22 @@ def _summary_is_valid(summary: str) -> bool:
     return True
 
 
+def _normalize_action_plan(raw: Dict[str, Any], fallback_goal: str) -> Dict[str, Any]:
+    """规范化动作计划结构。"""
+    goal = fallback_goal
+    actions: List[str] = []
+    if isinstance(raw, dict):
+        raw_goal = raw.get("goal")
+        if isinstance(raw_goal, str) and raw_goal.strip():
+            goal = raw_goal.strip()
+        raw_actions = raw.get("actions")
+        if isinstance(raw_actions, list):
+            for item in raw_actions:
+                if isinstance(item, str) and item.strip():
+                    actions.append(item.strip())
+    return {"goal": goal, "actions": actions}
+
+
 class OpenAIEmbedding(EmbeddingInterface):
     """OpenAI Embedding 接口封装。"""
 
@@ -498,6 +553,36 @@ class OpenAILLM(LLMInterface):
             self.logger.warning("OpenAI rag query failed: %s", exc)
             return await self.fallback.rag_query(query, memories)
         return reply or await self.fallback.rag_query(query, memories)
+
+    async def generate_actions(self, context: dict, memories: List[str]) -> Dict[str, Any]:
+        """生成动作计划并解析 JSON 输出。"""
+        system_prompt = (
+            "You are a game NPC planner. "
+            "Return a JSON object only: {\"goal\": \"...\", \"actions\": [\"...\"]}. "
+            "Each action must be a function signature string from the allowed list: "
+            "move_to(x=0, y=0), scan_nearby(tag=\"\"), find_item(item_type=\"\"), "
+            "pickup(object_id=\"\"), attack(target_id=\"\"), talk(target_id=\"\", topic=\"\"), "
+            "gather(resource_id=\"\"), wait(ticks=1). "
+            "Use Chinese for goal, but keep actions in function signature format."
+        )
+        context_block = self._format_context(context)
+        memory_block = self._build_memory_block(memories)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Context:\n{context_block}"},
+            {"role": "user", "content": f"Memories:\n{memory_block}"},
+            {"role": "user", "content": "Task: Return only the JSON object."},
+        ]
+        try:
+            reply = await self._chat_messages(messages)
+        except Exception as exc:
+            self.logger.warning("OpenAI actions failed: %s", exc)
+            return await self.fallback.generate_actions(context, memories)
+        data = _extract_json_block(reply) or {}
+        plan = _normalize_action_plan(data, str(context.get("goal", "")))
+        if plan["actions"]:
+            return plan
+        return await self.fallback.generate_actions(context, memories)
 
 
 def build_llm_group(config: Dict[str, Any]) -> LLMGroup:

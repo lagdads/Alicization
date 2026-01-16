@@ -3,7 +3,7 @@
 输入输出：输入为文本与路径；输出为世界观片段。"""
 
 import json
-import tomllib
+import toml
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -67,8 +67,7 @@ class WorldviewKnowledge:
         """从 JSON/TOML 文件加载世界观内容。"""
         suffix = filepath.lower().rsplit(".", 1)[-1]
         if suffix == "toml":
-            with open(filepath, "rb") as handle:
-                payload = tomllib.load(handle)
+            payload = toml.load(filepath)
         else:
             with open(filepath, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)

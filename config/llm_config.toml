@@ -11,9 +11,11 @@ type = "stub"
 [routing.default]
 summarize_and_score = "fast"
 generate_intent = "advanced"
+generate_actions = "advanced"
 
 [routing.memory]
 summarize_and_score = "fast"
 
 [routing.behavior]
 generate_intent = "advanced"
+generate_actions = "advanced"

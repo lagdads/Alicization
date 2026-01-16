@@ -3,7 +3,7 @@
 输入输出：输入为文件路径与主题；输出为知识内容或解锁结果。"""
 
 import json
-import tomllib
+import toml
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -88,7 +88,6 @@ class ChromaKnowledgeStore:
         data = self.collection.query(
             query_embeddings=[embedding],
             n_results=top_k,
-            include=["ids"],
         )
         ids_list = data.get("ids") or [[]]
         return list(ids_list[0])
@@ -117,8 +116,7 @@ class KnowledgeBase:
         """从 JSON/TOML 文件加载知识树结构。"""
         suffix = filepath.lower().rsplit(".", 1)[-1]
         if suffix == "toml":
-            with open(filepath, "rb") as handle:
-                payload = tomllib.load(handle)
+            payload = toml.load(filepath)
         else:
             with open(filepath, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)

@@ -235,7 +235,10 @@ class ChromaVectorStore:
         importance_score = float(metadata.get("importance_score", 0.0))
         current_strength = float(metadata.get("current_strength", 0.0))
         last_accessed_at = float(metadata.get("last_accessed_at", created_at))
-        vector = embedding or self.embedder(content)
+        if embedding is None:
+            vector = self.embedder(content)
+        else:
+            vector = embedding
         return MemoryFragment(
             id=parsed_id,
             content=content,
@@ -270,10 +273,18 @@ class ChromaVectorStore:
         """列出全部片段。"""
         data = self.collection.get(include=["documents", "metadatas", "embeddings"])
         items: List[MemoryFragment] = []
-        ids = data.get("ids") or []
-        documents = data.get("documents") or []
-        metadatas = data.get("metadatas") or []
-        embeddings = data.get("embeddings") or []
+        ids = data.get("ids")
+        if ids is None:
+            ids = []
+        documents = data.get("documents")
+        if documents is None:
+            documents = []
+        metadatas = data.get("metadatas")
+        if metadatas is None:
+            metadatas = []
+        embeddings = data.get("embeddings")
+        if embeddings is None:
+            embeddings = []
         for fragment_id, content, metadata, embedding in zip(
             ids, documents, metadatas, embeddings
         ):
@@ -295,10 +306,18 @@ class ChromaVectorStore:
             n_results=top_k,
             include=["documents", "metadatas", "embeddings"],
         )
-        ids_list = data.get("ids") or [[]]
-        documents_list = data.get("documents") or [[]]
-        metadatas_list = data.get("metadatas") or [[]]
-        embeddings_list = data.get("embeddings") or [[]]
+        ids_list = data.get("ids")
+        if ids_list is None:
+            ids_list = [[]]
+        documents_list = data.get("documents")
+        if documents_list is None:
+            documents_list = [[]]
+        metadatas_list = data.get("metadatas")
+        if metadatas_list is None:
+            metadatas_list = [[]]
+        embeddings_list = data.get("embeddings")
+        if embeddings_list is None:
+            embeddings_list = [[]]
         results: List[MemoryFragment] = []
         for fragment_id, content, metadata, embedding in zip(
             ids_list[0],

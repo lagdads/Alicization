@@ -9,12 +9,18 @@ import json
 import logging
 import re
 import time
-import tomllib
+import toml
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.behavior.goap import Action, GOAPPlanner
+from src.behavior.actions import (
+    Action as BehaviorAction,
+    ActionResult as BehaviorActionResult,
+    execute_action,
+    parse_action_plan,
+)
+from src.behavior.goap import Action as GoapAction, GOAPPlanner
 from src.cognitive.knowledge.interceptor import KnowledgeInterceptor
 from src.cognitive.knowledge.tree import KnowledgeBase
 from src.cognitive.knowledge.worldview import WorldviewKnowledge
@@ -28,9 +34,9 @@ DEFAULT_AGENT_STATE: Dict[str, Any] = {
     "has_map": False,
 }
 DEFAULT_ACTIONS = [
-    Action("gather_wood", {}, {"has_wood": True}, cost=1.0),
-    Action("make_fire", {"has_wood": True}, {"has_fire": True}, cost=2.0),
-    Action("explore_ruins", {}, {"has_map": True}, cost=1.5),
+    GoapAction("gather_wood", {}, {"has_wood": True}, cost=1.0),
+    GoapAction("make_fire", {"has_wood": True}, {"has_fire": True}, cost=2.0),
+    GoapAction("explore_ruins", {}, {"has_map": True}, cost=1.5),
 ]
 MEMORY_DIR = Path("data/memory")
 KNOWLEDGE_DIR = Path("data/knowledge")
@@ -54,9 +60,10 @@ HELP_TEXT = """命令帮助:
 class ActionResult:
     """单次行动执行结果。"""
 
-    action: Optional[Action]
+    action: Optional[str]
     success: bool
     reason: str
+    details: Optional[Dict[str, Any]] = None
 
 
 class ChatAgent:
@@ -71,7 +78,7 @@ class ChatAgent:
         worldview: WorldviewKnowledge,
         planner: GOAPPlanner,
         state: Dict[str, Any],
-        intent_llm: LLMInterface,
+        behavior_llm: LLMInterface,
     ) -> None:
         """初始化代理的状态与依赖模块。"""
         self.name = name
@@ -81,7 +88,8 @@ class ChatAgent:
         self.worldview = worldview
         self.planner = planner
         self.state = state
-        self.intent_llm = intent_llm
+        self.behavior_llm = behavior_llm
+        self.pending_actions: List[BehaviorAction] = []
 
     def introduce(self) -> str:
         """返回含世界观摘要的自我介绍。"""
@@ -97,9 +105,12 @@ class ChatAgent:
         )
         memories = self.memory.retrieve_and_reinforce(message, top_k=3)
         memory_texts = [fragment.content for fragment in memories]
-        intent = await self.intent_llm.generate_intent(
+        intent = await self.behavior_llm.generate_intent(
             {"goal": "respond"}, memory_texts
         )
+        if not self.pending_actions:
+            await self._queue_actions("respond", message, memory_texts)
+        action_outcome = await self._execute_next_action()
         knowledge_hint = self._knowledge_hint(message)
         worldview_hint = self._worldview_hint(message)
 
@@ -109,12 +120,26 @@ class ChatAgent:
         if knowledge_hint:
             lines.append(f"知识: {knowledge_hint}")
         lines.append(f"意图: {intent}")
+        if action_outcome:
+            action, result = action_outcome
+            lines.append(
+                f"行动: {action.name} | {self._format_action_result(action, result)}"
+            )
         if memory_texts:
             lines.append(f"记忆: {' / '.join(memory_texts)}")
         return "\n".join(lines)
 
     async def act_once(self, goal_token: str) -> ActionResult:
         """为目标执行一次行动并返回结果。"""
+        memories = self.memory.retrieve_and_reinforce(goal_token, top_k=3)
+        memory_texts = [fragment.content for fragment in memories]
+        if not self.pending_actions:
+            await self._queue_actions(goal_token, goal_token, memory_texts)
+        action_outcome = await self._execute_next_action()
+        if action_outcome:
+            action, result = action_outcome
+            reason = "执行成功" if result.success else "执行失败"
+            return ActionResult(action.name, result.success, reason, result.info)
         goal_state = _parse_goal_token(goal_token, self.planner.actions)
         if not goal_state:
             return ActionResult(None, False, "目标为空")
@@ -128,7 +153,42 @@ class ChatAgent:
             f"Action: {action.name}, success={success}, state={self.state}",
             force_consolidate=True,
         )
-        return ActionResult(action, success, reason)
+        return ActionResult(action.name, success, reason, {"state": dict(self.state)})
+
+    async def _queue_actions(
+        self, goal: str, message: str, memory_texts: List[str]
+    ) -> List[BehaviorAction]:
+        """调用 LLM 生成动作计划并写入队列。"""
+        context = {"goal": goal, "message": message, "state": self.state}
+        plan = await self.behavior_llm.generate_actions(context, memory_texts)
+        actions = parse_action_plan(plan)
+        if actions:
+            self.pending_actions.extend(actions)
+        return actions
+
+    async def _execute_next_action(
+        self,
+    ) -> Optional[tuple[BehaviorAction, BehaviorActionResult]]:
+        """执行队列中的下一个动作。"""
+        if not self.pending_actions:
+            return None
+        action = self.pending_actions.pop(0)
+        result = execute_action(action, self.state)
+        await self.memory.add_sensory_input(
+            f"Action: {action.name}, params={action.params}, result={result.info}",
+            force_consolidate=True,
+        )
+        return action, result
+
+    def _format_action_result(
+        self, action: BehaviorAction, result: BehaviorActionResult
+    ) -> str:
+        """格式化动作执行结果文本。"""
+        summary = "成功" if result.success else "失败"
+        details = result.info or {}
+        if details:
+            return f"{summary} | {details}"
+        return summary
 
     def _knowledge_hint(self, message: str) -> Optional[str]:
         """匹配消息与知识节点并返回可访问内容。"""
@@ -154,8 +214,7 @@ def _load_config(path: str) -> Dict[str, Any]:
     """从 JSON/TOML 文件加载配置内容。"""
     suffix = Path(path).suffix.lower()
     if suffix == ".toml":
-        with open(path, "rb") as handle:
-            return tomllib.load(handle)
+        return toml.load(path)
     with open(path, "r", encoding="utf-8") as handle:
         return json.load(handle)
 
@@ -210,7 +269,7 @@ def _knowledge_path_for_agent(name: str) -> Path:
     return KNOWLEDGE_DIR / f"{safe}-{digest}.chroma"
 
 
-def _parse_goal_token(token: str, actions: List[Action]) -> Dict[str, Any]:
+def _parse_goal_token(token: str, actions: List[GoapAction]) -> Dict[str, Any]:
     """将目标文本解析为目标状态字典。"""
     if not token:
         return {}
@@ -353,7 +412,7 @@ def _build_agents(
             worldview=worldview.with_default_visibility(str(worldview_visibility)),
             planner=planner,
             state=state,
-            intent_llm=intent_llm,
+            behavior_llm=intent_llm,
         )
     return agents
 
@@ -439,7 +498,7 @@ async def _run_cli(agents: Dict[str, ChatAgent]) -> None:
                 agent = agents[active_name]
                 result = await agent.act_once(arg)
                 if result.action:
-                    line = f"行动: {result.action.name} | {result.reason}"
+                    line = f"行动: {result.action} | {result.reason}"
                 else:
                     line = f"行动失败: {result.reason}"
                 line += f" | 状态: {_format_state(agent.state)}"
