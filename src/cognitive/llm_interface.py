@@ -229,9 +229,11 @@ class StubLLM(LLMInterface):
         elif "交谈" in message or "对话" in message:
             action = "talk(target_id=\"$npc_id\", topic=\"greeting\")"
         elif "拾取" in message or "拿起" in message:
-            action = "pickup(object_id=\"$object_id\")"
+            action = "find_item(item_type=\"item\")"
         elif "寻找" in message or "扫描" in message:
-            action = "scan_nearby(tag=\"item\")"
+            action = "find_item(item_type=\"item\")"
+        elif "观察" in message or "侦察" in message:
+            action = "observe_nearby_npcs(radius=3)"
         elif "采集" in message or "收集" in message:
             action = "gather(resource_id=\"wood\")"
         elif "火" in message and "木" in message:
@@ -628,9 +630,11 @@ class OpenAILLM(LLMInterface):
             "You are a game NPC planner. "
             "Return a JSON object only: {\"goal\": \"...\", \"actions\": [\"...\"]}. "
             "Each action must be a function signature string from the allowed list: "
-            "move_to(x=0, y=0), scan_nearby(tag=\"\"), find_item(item_type=\"\"), "
-            "pickup(object_id=\"\"), attack(target_id=\"\"), talk(target_id=\"\", topic=\"\"), "
-            "gather(resource_id=\"\"), wait(ticks=1). "
+            "move_to(x=0, y=0), observe_nearby_npcs(radius=3), "
+            "find_item(item_type=\"\"), attack(target_id=\"\"), "
+            "talk(target_id=\"\", topic=\"\"), gather(resource_id=\"\"), wait(ticks=1). "
+            "Use only high-level actions; low-level movement, scanning, and pickup "
+            "are handled by the engine. "
             "Avoid repeating the immediately previous successful action unless needed. "
             "Use Chinese for goal, but keep actions in function signature format."
         )

@@ -31,26 +31,28 @@ web/
 
 - `GET /api/configs`：返回可编辑配置列表（基础配置 + personas 目录）
 - `GET /api/config?id=<id>`：读取指定配置内容
-- `POST /api/config?id=<id>`：保存配置内容，写入前会校验 JSON 并格式化
+- `POST /api/config?id=<id>`：保存配置内容，写入前校验 JSON 并转换为 TOML
 
 ### 人设新增
 
 - `POST /api/persona`：新增人设文件（文件名需符合 `A-Za-z0-9_-`）
+- 人设目录固定为 `data/personas/`（Web UI 当前不管理 `data/worlds/` 下的人设）
 - Web UI 通过“新建人设”创建空白人设并进入编辑
 
 ### 运行入口
 
 - `POST /api/run`：运行 `main.py --run-seconds <n>`（读取 `config/app_config.toml` 作为基础配置）
 - 运行时长与输出均有上限，避免阻塞与过量输出
+- 运行结束时 `main.py` 会自动写入“运行日志（控制台输出副本）”到 `data/worlds/<world_id>/saves/`（或回退到 `data/saves/`）
 
 ### UI 编辑模型
 
 - 表单化编辑应用配置、LLM、Persona、Knowledge Graph 配置
-- 不直接暴露可编辑的原始 JSON（只提供只读预览）
+- 不直接暴露可编辑的原始 TOML（只提供只读预览）
 
 ### 安全与限制
 
-- 仅允许白名单内的 JSON 文件被读取/写入
+- 仅允许白名单内的 TOML 文件被读取/写入
 - 运行超时会被终止并返回超时提示
 
 ### 启动方式

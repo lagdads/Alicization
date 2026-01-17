@@ -25,7 +25,7 @@
 
 ### Data Store
 - **ChromaDB** (or equivalent Vector DB interface) for Long-Term Memory
-- **JSON/Dict** for Knowledge Tree & Worldview
+- **TOML/JSON** for Knowledge Tree & Worldview
 
 ### Architecture
 - ECS (Entity-Component-System) 变体
@@ -39,7 +39,7 @@
 │   ├── core/
 │   ├── cognitive/
 │   ├── behavior/
-│   └── world/                 # 世界层（暂缓）
+│   └── world/                 # 世界层（环境/规则）
 ├── config/
 ├── data/
 ├── docs/
@@ -64,15 +64,19 @@ alicization_world/
 │   │   └── llm_interface.py   # RAG与Prompt构建
 │   ├── behavior/              # 行为层 (原始文档要求)
 │   │   ├── goap.py            # 目标导向规划
-│   └── world/                 # 世界层（暂缓）
-│       └── environment.py     # 坐标、时间、物理规则（暂缓）
+│   └── world/                 # 世界层（环境/规则）
+│       ├── environment.py     # 坐标、时间、物理规则
+│       └── survival_war.py    # 生存战争会话与规则
 ├── config/                    # 运行配置（TOML）
 │   ├── app_config.toml        # 应用配置入口
 │   ├── llm_config.toml        # LLM 分组配置
 │   └── knowledge_graph.toml   # 知识树配置
 ├── data/                      # 预设数据
-│   ├── world_lore.toml         # 世界观知识
-│   └── personas/              # NPC 人设配置（TOML）
+│   └── worlds/                # 多世界观目录
+│       └── <world_id>/        # 单一世界数据
+│           ├── world_lore.toml # 世界观知识
+│           ├── world_config.toml # 世界配置
+│           └── personas/      # NPC 人设配置（TOML）
 ├── web/                       # 本地 Web UI
 │   ├── server.py              # 简易 Web 服务与 API
 │   ├── index.html             # Web UI 页面
@@ -86,17 +90,23 @@ alicization_world/
 - Core: `docs/modules/core.md`
 - Cognitive: `docs/modules/cognitive.md`
 - Behavior: `docs/modules/behavior.md`
-- World: `docs/modules/world.md`（暂缓）
+- World: `docs/modules/world.md`
 - Web: `docs/modules/web.md`
 
-### 3.2 实现约定
+### 3.2 世界选择与配置
+
+- `config/app_config.toml` 可指定 `world_id` 与 `worlds_dir`
+- 运行时可通过命令行覆盖：`--world-id`、`--worlds-dir`、`--world-config-path`
+- 世界内配置存放于 `data/worlds/<world_id>/world_config.toml`
+
+### 3.3 实现约定
 
 - `src/` 为顶层包，运行 `python main.py` 时可直接导入 `src.*`
-- 默认提供内存向量库实现，后续可替换为 ChromaDB 适配器
+- 记忆向量库默认使用 ChromaDB 持久化存储（也提供内存实现用于测试/替换）
 - LLM 接口提供 Stub 备用实现，可替换为真实 LLM 服务
 - **注释要求**：每个函数与类必须有注释（Python 使用 docstring；JS 使用 JSDoc），在新增或修改时同步补全。
 
-### 3.3 注释规范
+### 3.4 注释规范
 
 - **覆盖范围**：所有函数、类都必须有注释；新增/修改代码需同步补齐。
 - **语言**：统一使用中文注释。
@@ -173,21 +183,19 @@ class KnowledgeBase:
     tree: Dict[str, KnowledgeNode]  # 知识树节点字典
 ```
 
-**节点结构** (JSON):
-```json
-{
-  "id": "node_id",
-  "parent": "parent_id",
-  "is_locked": true,
-  "content": "知识内容或技能描述",
-  "prerequisites": ["node_id_1", "node_id_2"]
-}
+**节点结构** (TOML/JSON):
+```toml
+id = "node_id"
+parent = "parent_id"
+is_locked = true
+content = "知识内容或技能描述"
+prerequisites = ["node_id_1", "node_id_2"]
 ```
 
 **核心方法**:
 
 1. **`load_from_json(filepath: str) -> None`**
-   - 从 JSON 文件加载知识树结构
+   - 从 TOML/JSON 文件加载知识树结构
 
 2. **`query(topic: str) -> Optional[str]`**
    - 根据 topic 查找对应的知识节点
@@ -336,7 +344,9 @@ class WorldLoop:
 class EventBus:
     async def publish(self, event_type: str, data: dict) -> None
     async def subscribe(self, event_type: str, handler: Callable) -> None
-    async def wait_for_event(self, event_type: str) -> dict
+    async def wait_for_event(
+        self, event_type: Optional[str] = None, timeout: Optional[float] = None
+    ) -> Optional[Event]
 ```
 
 #### Entity
@@ -354,82 +364,70 @@ class Entity:
 
 ## 5. 数据格式规范
 
-### Knowledge Graph JSON 格式
+### Knowledge Graph TOML 格式
 
 **文件**: `config/knowledge_graph.toml`
 
-```json
-{
-  "nodes": [
-    {
-      "id": "basic_crafting",
-      "parent": null,
-      "is_locked": false,
-      "content": "基础制作技能：可以制作简单的工具和物品",
-      "prerequisites": []
-    },
-    {
-      "id": "gunpowder",
-      "parent": "basic_crafting",
-      "is_locked": true,
-      "content": "火药制作：需要硫磺、木炭和硝石",
-      "prerequisites": ["basic_crafting"]
-    }
-  ]
-}
+```toml
+[[nodes]]
+id = "basic_crafting"
+is_locked = false
+content = "基础制作技能：可以制作简单的工具和物品"
+prerequisites = []
+
+[[nodes]]
+id = "gunpowder"
+parent = "basic_crafting"
+is_locked = true
+content = "火药制作：需要硫磺、木炭和硝石"
+prerequisites = ["basic_crafting"]
 ```
 
-### Persona JSON 格式
+### Persona TOML 格式
 
-**文件**: `data/personas/<persona_name>.toml`
+**文件**: `data/worlds/<world_id>/personas/<persona_name>.toml`（或回退到 `data/personas/<persona_name>.toml`）
 
-```json
-{
-  "name": "Alice",
-  "description": "一个好奇的冒险者",
-  "initial_knowledge": ["basic_crafting"],
-  "memory_config": {
-    "promotion_threshold": 4.0,
-    "decay_rate": 0.1,
-    "forget_threshold": 15.0,
-    "max_strength": 100.0
-  }
-}
+```toml
+name = "Alice"
+description = "一个好奇的冒险者"
+worldview_visibility = "npc"
+initial_knowledge = ["basic_crafting"]
+
+[memory_config]
+promotion_threshold = 4.0
+decay_rate = 0.1
+forget_threshold = 15.0
+max_strength = 100.0
 ```
 
-### LLM Config JSON 格式
+### LLM Config TOML 格式
 
 **文件**: `config/llm_config.toml`
 
-```json
-{
-  "providers": {
-    "embed_api": {
-      "type": "stub",
-      "embedding_dim": 12
-    },
-    "fast_api": {
-      "type": "stub"
-    },
-    "advanced_api": {
-      "type": "stub"
-    }
-  },
-  "routing": {
-    "default": {
-      "summarize_and_score": "fast",
-      "generate_intent": "advanced",
-      "generate_reply": "advanced"
-    },
-    "memory": {
-      "summarize_and_score": "fast"
-    },
-    "behavior": {
-      "generate_intent": "advanced",
-      "generate_reply": "advanced"
-    }
-  }
-}
+```toml
+[providers.embed_api]
+type = "stub"
+embedding_dim = 12
+
+[providers.fast_api]
+type = "stub"
+
+[providers.advanced_api]
+type = "stub"
+
+[routing.default]
+summarize_and_score = "fast"
+generate_intent = "advanced"
+generate_reply = "advanced"
+generate_actions = "advanced"
+
+[routing.memory]
+summarize_and_score = "fast"
+
+[routing.behavior]
+generate_intent = "advanced"
+generate_reply = "advanced"
+generate_actions = "advanced"
 ```
 
 默认应用配置已指向 `config/llm_config.openai.toml`，并需要设置环境变量（模型与源地址从 `.env` 读取）：
@@ -438,19 +436,14 @@ class Entity:
 export OPENAI_API_KEY="your_api_key"
 ```
 
-配置示例（节选）：
+配置示例（节选，TOML）：
 
-```json
-{
-  "providers": {
-    "embed_api": {
-      "type": "openai",
-      "model_env": "EMBEDDING_MODEL",
-      "api_key_env": "EMBEDDING_API_KEY",
-      "base_url_env": "EMBEDDING_WEB"
-    }
-  }
-}
+```toml
+[providers.embed_api]
+type = "openai"
+model_env = "EMBEDDING_MODEL"
+api_key_env = "EMBEDDING_API_KEY"
+base_url_env = "EMBEDDING_WEB"
 ```
 
 ## 6. LLM 接口规范
@@ -506,7 +499,7 @@ export OPENAI_API_KEY="your_api_key"
 
 ## 9. 注意事项
 
-1. **异步优先**: 所有 I/O 操作必须使用 `async/await`
+1. **异步优先**: 网络/LLM 调用使用 `async/await`；文件读写目前为同步 I/O
 2. **错误处理**: 完善的异常处理和日志记录
 3. **可配置性**: 关键参数（衰减率、阈值等）应可配置
 4. **扩展性**: 基于接口编程，便于替换实现（如 Vector DB）
@@ -522,14 +515,20 @@ export OPENAI_API_KEY="your_api_key"
 - `--memory-test`: 覆盖应用配置，执行记忆测试
 - `--auto-tick`: 在 CLI 模式中启用自动 tick 循环
 - `--tick-interval`: 覆盖自动 tick 间隔秒数
+- `--max-ticks`: 覆盖自动 tick 最大次数（0 表示不限制）
 - `--webui`: 启动本地 Web UI（不运行 demo loop）
 - `--webui-host`: 覆盖 Web UI 监听地址
 - `--webui-port`: 覆盖 Web UI 监听端口
+- `--world-id`: 选择世界目录（对应 `data/worlds/<world_id>`）
+- `--worlds-dir`: 覆盖世界目录根路径
+- `--world-config-path`: 覆盖世界配置文件路径
 
 应用配置 `config/app_config.toml` 可设置 `auto_tick`、`tick_interval` 与 `max_ticks` 作为默认自动 tick 行为。
 默认 `auto_tick = true`，CLI 启动后会进入自动 tick 循环（自动模式不接收命令行指令）。非交互环境下会跳过输入提示。
 `max_ticks` 默认为 30，设置为 0 或负数表示不限制。
 `mode = "webui"` 可让启动时默认进入 Web UI（等效 `--webui`）。
+
+运行结束后会自动写入一次“运行日志（控制台输出副本）”到 `data/worlds/<world_id>/saves/`（或回退到 `data/saves/`）。
 
 ### 10.1 Web UI 使用说明
 

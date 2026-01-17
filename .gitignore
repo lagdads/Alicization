@@ -1,3 +1,14 @@
 .env
 __pycache__/
 *.pyc
+data/knowledge/
+data/memory/
+!data/memory/**/
+data/memory/**/*
+!data/memory/**/*.core.json
+data/worlds/*/memory/
+!data/worlds/*/memory/**/
+data/worlds/*/memory/**/*
+!data/worlds/*/memory/**/*.core.json
+data/worlds/*/knowledge/
+data/worlds/*/saves/

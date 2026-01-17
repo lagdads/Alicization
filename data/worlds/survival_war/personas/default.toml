@@ -1,0 +1,10 @@
+name = "Warrior"
+description = "封闭战场上的参战者，目标是击败其他 NPC 生存到最后"
+worldview_visibility = "npc"
+initial_knowledge = ["basic_crafting"]
+
+[memory_config]
+promotion_threshold = 4.0
+decay_rate = 0.1
+forget_threshold = 15.0
+max_strength = 100.0

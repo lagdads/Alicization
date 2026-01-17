@@ -4,6 +4,11 @@ worldview_path = "data/world_lore.toml"
 llm_config_path = "config/llm_config.openai.toml"
 persona_path = "data/personas/default.toml"
 
+# 世界选择配置
+# world_id 对应 data/worlds/<world_id> 目录
+world_id = "underworld"
+worlds_dir = "data/worlds"
+
 # 运行模式: "cli" 或 "webui"
 mode = "cli"
 

@@ -24,7 +24,7 @@
 - **并发**: asyncio (基于协程的高并发 Tick 调度)
 - **数据存储**:
   - ChromaDB (或等效 Vector DB 接口) - 长期记忆存储
-  - JSON/Dict - 知识树与世界观
+  - TOML/JSON - 知识树与世界观
 - **架构**: 认知层/行为层分层设计 + 可选扩展
 
 ## 快速开始
@@ -46,7 +46,12 @@ python main.py
 
 # 运行脚本化演示（用于 Web UI 或快速检查）
 python main.py --run-seconds 5
+
+# 切换到生存战争世界
+python main.py --world-id survival_war
 ```
+
+注意：默认 `config/app_config.toml` 为 `auto_tick = true`，启动后不会接收交互命令；如需交互式 CLI，请将其改为 `auto_tick = false` 后再运行。
 
 默认应用配置已指向 OpenAI 版本 LLM 配置，请先设置 `OPENAI_API_KEY`（或在 `.env` 配置各 provider 的 API key）：
 
@@ -82,6 +87,10 @@ python web/server.py
 - `--memory-test`：覆盖应用配置，执行记忆测试
 - `--auto-tick`：在 CLI 模式中启用自动 tick 循环
 - `--tick-interval`：覆盖自动 tick 间隔秒数
+- `--max-ticks`：覆盖自动 tick 最大次数（0 表示不限制）
+- `--world-id`：选择世界目录（对应 `data/worlds/<world_id>`）
+- `--worlds-dir`：覆盖世界目录根路径
+- `--world-config-path`：覆盖世界配置文件路径
 - `--webui`：启动本地 Web UI（不运行 demo loop）
 - `--webui-host`：覆盖 Web UI 监听地址
 - `--webui-port`：覆盖 Web UI 监听端口
@@ -90,16 +99,18 @@ python web/server.py
 默认 `auto_tick = true`，运行后会进入自动 tick 循环（自动模式不接收命令行指令）。非交互环境下会跳过输入提示，避免 EOF 退出。
 `max_ticks` 默认为 30，设置为 0 或负数表示不限制。
 `mode = "webui"` 可让启动时默认进入 Web UI（等效 `--webui`）。
+`world_id` 可指定默认世界目录（对应 `data/worlds/<world_id>`）。
 
 ### CLI 使用速览
 
 - `/list` 查看 AI 列表
 - `/use <name>` 切换对话对象
-- `/act [name] <goal>` 规划行动并加入队列
+- `/act <goal>` 规划行动并加入队列（需先 `/use`）
 - `/tick` 进入下一 tick 并执行行动
 - `/state [name]` 查看当前状态
 - `/lore [name]` 查看世界观概要
-- `@<name> <message>` 对指定 AI 说话
+
+生存战争模式下 NPC 行动由会话驱动，`/act` 命令不可用。
 
 ## 项目结构
 
@@ -108,10 +119,10 @@ python web/server.py
 ├── src/                       # 核心代码
 │   ├── core/                  # 引擎核心：双循环/事件/实体
 │   ├── cognitive/             # 认知层：记忆/知识/LLM 接口
-│   ├── behavior/              # 行为层：GOAP
-│   └── world/                 # 世界层：暂缓使用（保留）
+│   ├── behavior/              # 行为层：动作队列/GOAP
+│   └── world/                 # 世界层：环境与规则（含生存战争会话）
 ├── config/                    # 运行配置（app/llm/knowledge）
-├── data/                      # 预设数据（世界观/人设/记忆）
+├── data/                      # 预设数据（世界观/人设/记忆/世界目录）
 ├── docs/                      # 设计与开发文档
 ├── web/                       # 本地 Web UI（配置编辑与运行）
 ├── main.py                    # 启动入口
@@ -121,10 +132,11 @@ python web/server.py
 ## 数据目录
 
 - `config/knowledge_graph.toml`: 初始知识树定义
-- `data/world_lore.toml`: 世界观知识定义
+- `data/worlds/<world_id>/world_lore.toml`: 世界观知识定义
+- `data/worlds/<world_id>/world_config.toml`: 世界专属配置（模式/地图/刷新/规则）
 - `config/llm_config.toml`: LLM 分组配置（stub 版本）
 - `config/llm_config.openai.toml`: LLM 分组配置（OpenAI/兼容 API，从 `.env` 读取）
-- `data/personas/*.toml`: Agent/NPC 人设与记忆参数
+- `data/worlds/<world_id>/personas/*.toml`: Agent/NPC 人设与记忆参数
 
 ## 文档索引
 
@@ -133,7 +145,7 @@ python web/server.py
 - Core 模块结构：`docs/modules/core.md`
 - Cognitive 模块结构：`docs/modules/cognitive.md`
 - Behavior 模块结构：`docs/modules/behavior.md`
-- World 模块结构：`docs/modules/world.md`（暂缓）
+- World 模块结构：`docs/modules/world.md`
 - Web 模块结构：`docs/modules/web.md`
 
 ## 核心模块设计
@@ -161,7 +173,7 @@ python web/server.py
 **类**: `KnowledgeBase`
 
 **逻辑**:
-- 加载 JSON 定义的技能树 (Nodes: ID, Parent, IsLocked, Content)
+- 加载 TOML/JSON 定义的技能树 (Nodes: ID, Parent, IsLocked, Content)
 - `query(topic)` 方法：
   - 如果节点是 `Locked` 状态，返回 `None` 或拦截信号
   - 如果是 `Unlocked`，返回 `Content`
@@ -171,7 +183,7 @@ python web/server.py
 
 #### GOAP (Goal-Oriented Action Planning)
 
-- 实现简单的规划器
+- 实现简单的规划器（当前主要作为动作规划的兜底能力）
 - 给定 `Current_State` (e.g., `has_wood=False`) 和 `Goal` (e.g., `make_fire`)
 - 反向推导 `Action` 序列
 
@@ -179,6 +191,7 @@ python web/server.py
 
 - Cognitive Core 产出 **意图 (Intent)** (e.g., "我想炸掉这个门")
 - GOAP 将意图转化为 **动作链** (e.g., `Learn_Gunpowder -> Craft_Bomb -> Use_Bomb`)
+- LLM 行为规划只输出高层动作（函数签名），由行为层拆解为 tick 级行动链（移动/扫描/拾取等由引擎生成）
 
 ### Module C: CLI 交互 (Multi-Agent Console)
 
@@ -190,17 +203,18 @@ python web/server.py
 
 ## 实现说明
 
-- 向量库默认实现为内存检索（可替换为 ChromaDB 适配器）
+- 记忆向量库默认使用 ChromaDB 持久化存储（开发/测试可替换为内存实现）
 - LLM 接口提供 Stub 备用实现（可替换为真实 LLM 服务）
-- 人设记忆配置键：`promotion_threshold`、`decay_rate`、`forget_threshold`、`max_strength`（见 `data/personas/default.toml`）
+- 人设记忆配置键：`promotion_threshold`、`decay_rate`、`forget_threshold`、`max_strength`（见 `data/worlds/<world_id>/personas/default.toml`，或回退到 `data/personas/default.toml`）
 - LLM 分组配置键：`providers.embed_api`、`providers.fast_api`、`providers.advanced_api`（见 `config/llm_config.toml`）
 - 模块路由配置：`routing.<module>.<task>`，用于指定模块使用 fast/advanced（见 `config/llm_config.toml`）
+- 运行结束后会自动保存本次运行日志（控制台输出副本）到 `data/worlds/<world_id>/saves/`（或回退到 `data/saves/`）
 
 ## 架构设计原则
 
 1. **分离关注点**: 认知层与行为层清晰分离
 2. **事件驱动**: 使用事件总线实现模块间解耦
-3. **异步优先**: 所有 I/O 操作使用 asyncio
+3. **异步优先**: 网络/LLM 调用使用 asyncio；文件读写保持同步
 4. **可扩展性**: 基于 ECS 架构，易于添加新组件
 
 ## 开发路线图
@@ -208,5 +222,5 @@ python web/server.py
 - [ ] Phase 1: 核心引擎框架（Loop、Event Bus、Entity）
 - [ ] Phase 2: 认知内核（Memory System、Knowledge System）
 - [ ] Phase 3: 行为驱动（GOAP、Behavior Tree）
-- [ ] Phase 4: 世界层（暂停）
+- [ ] Phase 4: 世界层（环境/规则/会话）
 - [ ] Phase 5: 集成测试与优化

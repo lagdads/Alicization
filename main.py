@@ -14,12 +14,13 @@ import toml
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from src.behavior.actions import (
     Action as BehaviorAction,
     ActionResult as BehaviorActionResult,
     execute_action,
+    expand_action_chain,
     parse_action_plan,
 )
 from src.behavior.goap import Action as GoapAction, GOAPPlanner
@@ -29,6 +30,7 @@ from src.cognitive.knowledge.worldview import WorldviewKnowledge
 from src.cognitive.llm_interface import LLMInterface, build_llm_group
 from src.cognitive.memory.store import MemoryManager
 from src.world.environment import Environment
+from src.world.survival_war import SurvivalWarSession
 
 DEFAULT_AGENT_NAMES = ["Alice"]
 DEFAULT_AGENT_STATE: Dict[str, Any] = {
@@ -41,9 +43,6 @@ DEFAULT_ACTIONS = [
     GoapAction("make_fire", {"has_wood": True}, {"has_fire": True}, cost=2.0),
     GoapAction("explore_ruins", {}, {"has_map": True}, cost=1.5),
 ]
-MEMORY_DIR = Path("data/memory")
-KNOWLEDGE_DIR = Path("data/knowledge")
-SAVE_DIR = Path("data/saves")
 DEFAULT_APP_CONFIG_PATH = "config/app_config.toml"
 
 HELP_TEXT = """命令帮助:
@@ -70,6 +69,13 @@ class ActionResult:
     details: Optional[Dict[str, Any]] = None
 
 
+def _default_action_executor(
+    action: BehaviorAction, state: Dict[str, Any], _context: Optional[Dict[str, Any]]
+) -> BehaviorActionResult:
+    """兼容默认动作执行函数。"""
+    return execute_action(action, state)
+
+
 class ChatAgent:
     """封装记忆、知识与规划的代理对象。"""
 
@@ -83,6 +89,10 @@ class ChatAgent:
         planner: GOAPPlanner,
         state: Dict[str, Any],
         behavior_llm: LLMInterface,
+        action_executor: Optional[
+            Callable[[BehaviorAction, Dict[str, Any], Optional[Dict[str, Any]]], BehaviorActionResult]
+        ] = None,
+        action_context: Optional[Dict[str, Any]] = None,
     ) -> None:
         """初始化代理的状态与依赖模块。"""
         self.name = name
@@ -93,6 +103,8 @@ class ChatAgent:
         self.planner = planner
         self.state = state
         self.behavior_llm = behavior_llm
+        self.action_executor = action_executor or _default_action_executor
+        self.action_context = action_context or {}
         self.pending_actions: List[BehaviorAction] = []
         self.last_action: Optional[BehaviorAction] = None
         self.last_action_success: Optional[bool] = None
@@ -196,8 +208,11 @@ class ChatAgent:
         plan = await self.behavior_llm.generate_actions(context, memory_texts)
         actions = parse_action_plan(plan)
         if actions:
-            self.pending_actions.extend(actions)
-        return actions
+            expanded = expand_action_chain(actions, self.state)
+            if expanded:
+                self.pending_actions.extend(expanded)
+                return expanded
+        return []
 
     async def _execute_next_action(
         self,
@@ -206,7 +221,7 @@ class ChatAgent:
         if not self.pending_actions:
             return None
         action = self.pending_actions.pop(0)
-        result = execute_action(action, self.state)
+        result = self.action_executor(action, self.state, self.action_context)
         same_action = (
             self.last_action
             and self.last_action.name == action.name
@@ -276,6 +291,65 @@ class ChatAgent:
         return await self._execute_next_action()
 
 
+@dataclass(frozen=True)
+class WorldContext:
+    """运行时世界路径与模式配置。"""
+
+    world_id: str
+    base_dir: Optional[Path]
+    world_mode: str
+    world_config: Dict[str, Any]
+    worldview_path: str
+    persona_path: str
+    knowledge_path: str
+    memory_dir: Path
+    knowledge_dir: Path
+    save_dir: Path
+
+
+@dataclass
+class SessionLog:
+    """运行日志收集器（输出拷贝）。"""
+
+    started_at: float
+    lines: List[str]
+
+    def __init__(self) -> None:
+        """初始化日志收集器。"""
+        self.started_at = time.time()
+        self.lines = []
+
+    def _append_lines(self, message: str) -> None:
+        """追加多行日志内容。"""
+        text = str(message)
+        parts = text.splitlines()
+        if not parts:
+            self.lines.append("")
+            return
+        self.lines.extend(parts)
+
+    def emit(self, message: str) -> None:
+        """输出并记录日志。"""
+        print(message, flush=True)
+        self._append_lines(message)
+
+    def path_for(self, save_dir: Path, world_id: str) -> Path:
+        """生成日志文件路径。"""
+        save_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started_at))
+        safe_world = re.sub(r"[^A-Za-z0-9_-]+", "_", world_id or "default").strip("_")
+        if not safe_world:
+            safe_world = "default"
+        filename = f"run-{safe_world}-{timestamp}.log"
+        return save_dir / filename
+
+    def save(self, path: Path) -> None:
+        """保存日志内容到文件。"""
+        with path.open("w", encoding="utf-8") as handle:
+            for line in self.lines:
+                handle.write(f"{line}\n")
+
+
 def _load_config(path: str) -> Dict[str, Any]:
     """从 JSON/TOML 文件加载配置内容。"""
     suffix = Path(path).suffix.lower()
@@ -291,6 +365,110 @@ def _load_app_config(path: str) -> Dict[str, Any]:
         return _load_config(path)
     except FileNotFoundError:
         return {}
+
+
+def _resolve_relative_path(base_dir: Optional[Path], value: Optional[str]) -> Optional[str]:
+    """将相对路径解析到世界目录。"""
+    if not value:
+        return None
+    path = Path(str(value))
+    if base_dir and not path.is_absolute():
+        path = base_dir / path
+    return path.as_posix()
+
+
+def _resolve_world_path(
+    base_dir: Optional[Path],
+    world_value: Optional[str],
+    app_value: Optional[str],
+    base_fallback: str,
+    global_fallback: str,
+) -> str:
+    """解析世界相关路径（优先 world_config，其次 app_config）。"""
+    resolved = _resolve_relative_path(base_dir, world_value)
+    if resolved:
+        return resolved
+    if app_value:
+        return str(app_value)
+    if base_dir:
+        return (base_dir / base_fallback).as_posix()
+    return global_fallback
+
+
+def _load_world_config(
+    base_dir: Optional[Path],
+    app_config: Dict[str, Any],
+    args: argparse.Namespace,
+    logger: logging.Logger,
+) -> Dict[str, Any]:
+    """加载世界专属配置。"""
+    world_config_path = args.world_config_path or app_config.get("world_config_path")
+    if not world_config_path and base_dir:
+        world_config_path = base_dir / "world_config.toml"
+    if not world_config_path:
+        return {}
+    try:
+        return _load_config(str(world_config_path))
+    except FileNotFoundError:
+        logger.warning("World config not found: %s", world_config_path)
+        return {}
+
+
+def _resolve_world_context(
+    app_config: Dict[str, Any],
+    args: argparse.Namespace,
+    logger: logging.Logger,
+) -> WorldContext:
+    """解析世界选择与路径配置。"""
+    world_id = str(args.world_id or app_config.get("world_id") or "").strip()
+    worlds_dir = Path(args.worlds_dir or app_config.get("worlds_dir", "data/worlds"))
+    base_dir = worlds_dir / world_id if world_id else None
+    if base_dir and world_id and not base_dir.exists():
+        logger.warning("World base dir not found: %s", base_dir)
+    world_config = _load_world_config(base_dir, app_config, args, logger)
+    world_mode = str(world_config.get("world_mode", "default")).lower()
+
+    worldview_path = _resolve_world_path(
+        base_dir,
+        world_config.get("worldview_path"),
+        app_config.get("worldview_path"),
+        base_fallback="world_lore.toml",
+        global_fallback="data/world_lore.toml",
+    )
+    persona_path = _resolve_world_path(
+        base_dir,
+        world_config.get("persona_path"),
+        app_config.get("persona_path"),
+        base_fallback="personas/default.toml",
+        global_fallback="data/personas/default.toml",
+    )
+    world_knowledge = world_config.get("knowledge_path")
+    if world_knowledge:
+        knowledge_path = _resolve_relative_path(base_dir, str(world_knowledge)) or str(
+            world_knowledge
+        )
+    elif app_config.get("knowledge_path"):
+        knowledge_path = str(app_config.get("knowledge_path"))
+    elif base_dir and (base_dir / "knowledge_graph.toml").exists():
+        knowledge_path = (base_dir / "knowledge_graph.toml").as_posix()
+    else:
+        knowledge_path = "config/knowledge_graph.toml"
+    memory_dir = base_dir / "memory" if base_dir else Path("data/memory")
+    knowledge_dir = base_dir / "knowledge" if base_dir else Path("data/knowledge")
+    save_dir = base_dir / "saves" if base_dir else Path("data/saves")
+
+    return WorldContext(
+        world_id=world_id,
+        base_dir=base_dir,
+        world_mode=world_mode,
+        world_config=world_config,
+        worldview_path=worldview_path,
+        persona_path=persona_path,
+        knowledge_path=knowledge_path,
+        memory_dir=memory_dir,
+        knowledge_dir=knowledge_dir,
+        save_dir=save_dir,
+    )
 
 
 def _setup_logging() -> None:
@@ -320,22 +498,39 @@ def _resolve_agent_names(value: Any) -> List[str]:
     return _parse_agent_names(str(value))
 
 
-def _memory_path_for_agent(name: str) -> Path:
+def _resolve_agent_names_from_world_config(
+    world_config: Dict[str, Any], fallback: List[str]
+) -> List[str]:
+    """从世界配置的 NPC 列表提取名称。"""
+    npcs = world_config.get("npcs")
+    if not isinstance(npcs, list):
+        return fallback
+    names: List[str] = []
+    for entry in npcs:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name") or entry.get("id")
+        if name:
+            names.append(str(name).strip())
+    return names or fallback
+
+
+def _memory_path_for_agent(name: str, memory_dir: Path) -> Path:
     """为指定角色生成记忆文件基准路径。"""
     safe = re.sub(r"[^A-Za-z0-9_-]+", "_", name.strip()).strip("_")
     if not safe:
         safe = "npc"
-    agent_dir = MEMORY_DIR / safe
+    agent_dir = memory_dir / safe
     return agent_dir / f"{safe}.json"
 
 
-def _knowledge_path_for_agent(name: str) -> Path:
+def _knowledge_path_for_agent(name: str, knowledge_dir: Path) -> Path:
     """为指定角色生成知识向量库路径。"""
     safe = re.sub(r"[^A-Za-z0-9_-]+", "_", name.strip()).strip("_")
     if not safe:
         safe = "npc"
     digest = hashlib.md5(name.encode("utf-8")).hexdigest()[:8]
-    return KNOWLEDGE_DIR / f"{safe}-{digest}.chroma"
+    return knowledge_dir / f"{safe}-{digest}.chroma"
 
 
 def _parse_goal_token(token: str, actions: List[GoapAction]) -> Dict[str, Any]:
@@ -412,11 +607,233 @@ def _build_talk_message(topic: str) -> str:
     return "能聊聊吗？"
 
 
+def _resolve_action_params(
+    params: Dict[str, Any], state: Dict[str, Any]
+) -> Dict[str, Any]:
+    """解析动作参数中的占位符。"""
+    placeholders = state.get("placeholders", {})
+    resolved: Dict[str, Any] = {}
+    for key, value in params.items():
+        if isinstance(value, str) and value.startswith("$"):
+            resolved[key] = placeholders.get(value[1:], value)
+        else:
+            resolved[key] = value
+    return resolved
+
+
+def _build_survival_prompt(
+    agent: ChatAgent, session: SurvivalWarSession
+) -> str:
+    """构造生存战争模式的 LLM 行动提示。"""
+    summary = agent.worldview.intro()
+    state = agent.state
+    position = state.get("position") or {}
+    nav_target = state.get("nav_target")
+    weapon = state.get("weapon")
+    destiny = state.get("destiny")
+    nearby_npcs = state.get("nearby_npcs")
+    nearby_weapons = state.get("nearby_weapons")
+    lines = [
+        "你正在进行生存战争。目标：击败其他 NPC，存活到最后。",
+    ]
+    if summary:
+        lines.append(f"世界观提示：{summary}")
+    lines.append(
+        "每个 tick 只执行 1 个动作。move_to 只设置目标，系统会自动寻路逐步移动。"
+    )
+    lines.append(
+        "可用动作: move_to(x,y), find_item(item_type=\"weapon\"), "
+        "observe_nearby_npcs(radius), attack(target_id), wait(ticks=1)"
+    )
+    lines.append(
+        f"自身状态: position=({position.get('x', 0)},{position.get('y', 0)}), "
+        f"destiny={destiny}, weapon={weapon}"
+    )
+    if nav_target:
+        lines.append(f"当前导航目标: {nav_target}")
+    if nearby_npcs:
+        lines.append(f"已观察到的 NPC: {nearby_npcs}")
+    if nearby_weapons:
+        lines.append(f"已观察到的武器: {nearby_weapons}")
+    lines.append("请根据当前战局输出下一步动作计划。")
+    return "\n".join(lines)
+
+
+def _execute_survival_action(
+    action: BehaviorAction,
+    state: Dict[str, Any],
+    context: Optional[Dict[str, Any]],
+) -> BehaviorActionResult:
+    """执行生存战争动作并同步状态。"""
+    if not context:
+        return BehaviorActionResult(False, {"error": "missing_context"})
+    session = context.get("session")
+    npc_id = context.get("npc_id")
+    if not isinstance(session, SurvivalWarSession) or not isinstance(npc_id, str):
+        return BehaviorActionResult(False, {"error": "invalid_context"})
+    params = _resolve_action_params(action.params, state)
+    if action.name == "move_to":
+        target_x = int(params.get("x", 0))
+        target_y = int(params.get("y", 0))
+        state["nav_target"] = {"x": target_x, "y": target_y}
+        return BehaviorActionResult(True, {"nav_target": {"x": target_x, "y": target_y}})
+    if action.name == "move":
+        dx = int(params.get("dx", 0))
+        dy = int(params.get("dy", 0))
+        result = session.execute_action(
+            npc_id, BehaviorAction(name="move", params={"dx": dx, "dy": dy})
+        )
+        state.update(session.snapshot_state(npc_id))
+        return result
+    if action.name == "observe_nearby_npcs":
+        radius = int(params.get("radius", 3))
+        result = session.execute_action(
+            npc_id,
+            BehaviorAction(name="observe_nearby_npcs", params={"radius": radius}),
+        )
+        if result.info and "observations" in result.info:
+            state["nearby_npcs"] = result.info.get("observations", [])
+        state.update(session.snapshot_state(npc_id))
+        return result
+    if action.name == "scan_nearby":
+        tag = str(params.get("tag", ""))
+        result = session.execute_action(
+            npc_id, BehaviorAction(name="scan_nearby", params={"tag": tag})
+        )
+        if result.info and "weapons" in result.info:
+            state["nearby_weapons"] = result.info.get("weapons", [])
+        state.update(session.snapshot_state(npc_id))
+        return result
+    result = session.execute_action(npc_id, BehaviorAction(name=action.name, params=params))
+    state.update(session.snapshot_state(npc_id))
+    return result
+
+
+def _expand_move_path(
+    session: SurvivalWarSession,
+    start: tuple[int, int],
+    target: tuple[int, int],
+    max_steps: int,
+) -> List[BehaviorAction]:
+    """将移动目标拆解为单步移动序列。"""
+    actions: List[BehaviorAction] = []
+    current = start
+    for _ in range(max_steps):
+        if current == target:
+            break
+        step = session.next_step_toward(current, target)
+        dx = step[0] - current[0]
+        dy = step[1] - current[1]
+        if abs(dx) + abs(dy) != 1:
+            break
+        actions.append(BehaviorAction(name="move", params={"dx": dx, "dy": dy}))
+        current = step
+    return actions
+
+
+def _apply_move_steps(
+    start: tuple[int, int], steps: List[BehaviorAction]
+) -> tuple[int, int]:
+    """将 move 动作叠加到坐标。"""
+    current_x, current_y = start
+    for step in steps:
+        current_x += int(step.params.get("dx", 0))
+        current_y += int(step.params.get("dy", 0))
+    return current_x, current_y
+
+
+def _expand_survival_actions(
+    agent: ChatAgent,
+    session: SurvivalWarSession,
+    actions: List[BehaviorAction],
+) -> List[BehaviorAction]:
+    """将高层动作拆解为 tick 级行动链。"""
+    expanded: List[BehaviorAction] = []
+    npc_id = agent.name
+    npc_state = session.npcs.get(npc_id)
+    position = agent.state.get("position") or {}
+    current_pos = (int(position.get("x", 0)), int(position.get("y", 0)))
+    max_steps = max(session.world_map.width, session.world_map.height) * 2
+    for action in actions:
+        params = _resolve_action_params(action.params, agent.state)
+        if action.name == "move_to":
+            target = (int(params.get("x", 0)), int(params.get("y", 0)))
+            agent.state["nav_target"] = {"x": target[0], "y": target[1]}
+            move_steps = _expand_move_path(session, current_pos, target, max_steps)
+            if move_steps:
+                expanded.extend(move_steps)
+                current_pos = _apply_move_steps(current_pos, move_steps)
+            continue
+        if action.name == "move":
+            expanded.append(BehaviorAction(name="move", params=params))
+            current_pos = (
+                current_pos[0] + int(params.get("dx", 0)),
+                current_pos[1] + int(params.get("dy", 0)),
+            )
+            continue
+        if action.name == "find_item":
+            item_type = str(params.get("item_type", ""))
+            expanded.append(BehaviorAction(name="scan_nearby", params={"tag": item_type}))
+            if item_type == "weapon" and session.weapons:
+                nearest = session._nearest_weapon(current_pos)
+                if nearest:
+                    target = nearest.position
+                    agent.state["nav_target"] = {"x": target[0], "y": target[1]}
+                    expanded.extend(
+                        _expand_move_path(session, current_pos, target, max_steps)
+                    )
+                    expanded.append(
+                        BehaviorAction(name="scan_nearby", params={"tag": item_type})
+                    )
+                    expanded.append(
+                        BehaviorAction(
+                            name="pickup", params={"object_id": nearest.instance_id}
+                        )
+                    )
+            else:
+                dx, dy = 1, 0
+                expanded.append(BehaviorAction(name="move", params={"dx": dx, "dy": dy}))
+                expanded.append(
+                    BehaviorAction(name="scan_nearby", params={"tag": item_type})
+                )
+            continue
+        if action.name == "attack":
+            target_id = str(params.get("target_id", "")).strip()
+            target = session.npcs.get(target_id)
+            if not target:
+                expanded.append(BehaviorAction(name="wait", params={"ticks": 1}))
+                continue
+            weapon_range = 1
+            if npc_state and npc_state.weapon:
+                weapon_range = max(1, npc_state.weapon.range)
+            distance = abs(current_pos[0] - target.position[0]) + abs(
+                current_pos[1] - target.position[1]
+            )
+            if distance <= weapon_range:
+                expanded.append(BehaviorAction(name="attack", params={"target_id": target_id}))
+                continue
+            target_pos = target.position
+            needed = max(0, distance - weapon_range)
+            move_steps = _expand_move_path(session, current_pos, target_pos, needed)
+            if move_steps:
+                expanded.extend(move_steps)
+                current_pos = _apply_move_steps(current_pos, move_steps)
+            expanded.append(BehaviorAction(name="attack", params={"target_id": target_id}))
+            continue
+        if action.name in ("observe_nearby_npcs", "scan_nearby", "pickup", "wait", "talk", "gather"):
+            expanded.append(BehaviorAction(name=action.name, params=params))
+            continue
+        expanded.append(BehaviorAction(name=action.name, params=params))
+    return expanded
+
+
+
+
 def _save_game_snapshot(
-    agents: Dict[str, ChatAgent], label: Optional[str] = None
+    agents: Dict[str, ChatAgent], save_dir: Path, label: Optional[str] = None
 ) -> Path:
     """保存当前进度到本地文件。"""
-    SAVE_DIR.mkdir(parents=True, exist_ok=True)
+    save_dir.mkdir(parents=True, exist_ok=True)
     safe_label = ""
     if label:
         safe_label = re.sub(r"[^A-Za-z0-9_-]+", "_", label.strip()).strip("_")
@@ -436,7 +853,7 @@ def _save_game_snapshot(
             for name, agent in agents.items()
         },
     }
-    path = SAVE_DIR / filename
+    path = save_dir / filename
     with path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, indent=2)
         handle.write("\n")
@@ -458,6 +875,8 @@ def _build_agents(
     memory_llm: LLMInterface,
     intent_llm: LLMInterface,
     embed_api: Any,
+    memory_dir: Path,
+    knowledge_dir: Path,
 ) -> Dict[str, ChatAgent]:
     """根据人设与配置构建 Agent 实例。"""
     memory_config = persona.get("memory_config", {})
@@ -474,13 +893,13 @@ def _build_agents(
         knowledge_base = KnowledgeBase(
             interceptor=KnowledgeInterceptor(),
             embedder=embed_api,
-            vector_store_path=_knowledge_path_for_agent(name),
+            vector_store_path=_knowledge_path_for_agent(name, knowledge_dir),
         )
         knowledge_base.load_from_json(knowledge_path)
         for node_id in persona.get("initial_knowledge", []):
             knowledge_base.learn(node_id)
 
-        memory_path = _memory_path_for_agent(name)
+        memory_path = _memory_path_for_agent(name, memory_dir)
         memory = MemoryManager(
             llm_interface=memory_llm,
             embedding_api=embed_api,
@@ -516,14 +935,18 @@ def _build_agents(
 
 async def _run_cli(
     agents: Dict[str, ChatAgent],
+    save_dir: Path,
+    world_id: str,
+    session_log: SessionLog,
     auto_tick: bool = False,
     tick_interval: float = 1.0,
     max_ticks: int = 0,
 ) -> None:
     """运行多 Agent 交互式 CLI。"""
+    emit = session_log.emit
     names = list(agents.keys())
     if not names:
-        print("未配置角色。")
+        emit("未配置角色。")
         return
     active_name: Optional[str] = None
     tick_count = 0
@@ -540,17 +963,17 @@ async def _run_cli(
         for agent in agent_list:
             await agent.memory.consolidate()
             agent.memory.apply_decay()
-        print(f"第 {day_count} 天结束，记忆已更新。", flush=True)
+        emit(f"第 {day_count} 天结束，记忆已更新。")
 
     async def advance_tick() -> None:
         nonlocal tick_count, day_tick_count
         async with tick_lock:
             if max_ticks > 0 and tick_count >= max_ticks:
                 if auto_tick:
-                    print(f"已达到最大 tick: {max_ticks}，自动停止。", flush=True)
+                    emit(f"已达到最大 tick: {max_ticks}，自动停止。")
                     stop_event.set()
                 else:
-                    print(f"已达到最大 tick: {max_ticks}。", flush=True)
+                    emit(f"已达到最大 tick: {max_ticks}。")
                 return
             tick_count += 1
             agent_list = [agents[name] for name in names]
@@ -573,7 +996,7 @@ async def _run_cli(
                 if not outcome:
                     continue
                 action, result = outcome
-                print(_format_tick_action(tick_count, agent, action, result), flush=True)
+                emit(_format_tick_action(tick_count, agent, action, result))
                 if action.name == "talk" and result.success:
                     info = result.info or {}
                     target = str(info.get("target", "")).strip()
@@ -583,7 +1006,7 @@ async def _run_cli(
                         reply = await agents[target].respond_to_npc(
                             agent.name, message
                         )
-                        print(f"{target}: {reply}", flush=True)
+                        emit(f"{target}: {reply}")
             day_tick_count += 1
             if ticks_per_day > 0 and day_tick_count >= ticks_per_day:
                 await _end_day(agent_list)
@@ -598,7 +1021,7 @@ async def _run_cli(
     if auto_tick:
         auto_task = asyncio.create_task(auto_tick_loop())
 
-    print("命令行已启动。输入 /help 查看命令。")
+    emit("命令行已启动。输入 /help 查看命令。")
 
     async def _cleanup() -> None:
         stop_event.set()
@@ -608,11 +1031,14 @@ async def _run_cli(
                 await auto_task
 
     if auto_tick:
-        print("自动 tick 模式已启动，不接收命令行指令。按 Ctrl+C 退出。")
+        emit("自动 tick 模式已启动，不接收命令行指令。按 Ctrl+C 退出。")
         try:
             await stop_event.wait()
         finally:
             await _cleanup()
+        log_path = session_log.path_for(save_dir, world_id)
+        emit(f"运行日志已保存: {log_path.as_posix()}")
+        session_log.save(log_path)
         return
 
     try:
@@ -621,8 +1047,8 @@ async def _run_cli(
             try:
                 raw = (await _prompt(prompt_label)).strip()
             except EOFError:
-                print("检测到输入结束，退出交互模式。")
-                break
+                    emit("检测到输入结束，退出交互模式。")
+                    break
             if not raw:
                 continue
             if raw.startswith("/"):
@@ -630,89 +1056,334 @@ async def _run_cli(
                 command = parts[0]
                 arg = parts[1].strip() if len(parts) > 1 else ""
                 if command == "/quit":
-                    print("已退出。")
+                    emit("已退出。")
                     break
                 if command == "/exit":
                     if active_name is None:
-                        print("未在对话中。")
+                        emit("未在对话中。")
                     else:
                         active_name = None
                     continue
                 if command == "/help":
-                    print(HELP_TEXT)
+                    emit(HELP_TEXT)
                     continue
                 if command == "/list":
-                    print(", ".join(names))
+                    emit(", ".join(names))
                     continue
                 if command == "/use":
                     if not arg:
-                        print("用法: /use <name>")
+                        emit("用法: /use <name>")
                         continue
                     if arg in agents:
                         active_name = arg
                     else:
-                        print(f"未知角色: {arg}")
+                        emit(f"未知角色: {arg}")
                     continue
                 if command == "/state":
                     target = arg or active_name
                     if not target:
-                        print("未选择角色。")
+                        emit("未选择角色。")
                         continue
                     agent = agents.get(target)
                     if not agent:
-                        print(f"未知角色: {target}")
+                        emit(f"未知角色: {target}")
                         continue
                     prefix = "状态" if target == active_name else f"{agent.name} 状态"
-                    print(f"{prefix}: {_format_state(agent.state)}")
+                    emit(f"{prefix}: {_format_state(agent.state)}")
                     continue
                 if command == "/lore":
                     target = arg or active_name
                     if not target:
-                        print("未选择角色。")
+                        emit("未选择角色。")
                         continue
                     agent = agents.get(target)
                     if not agent:
-                        print(f"未知角色: {target}")
+                        emit(f"未知角色: {target}")
                         continue
                     intro = agent.worldview.intro()
                     if intro:
                         prefix = "世界观" if target == active_name else f"{agent.name} 世界观"
-                        print(f"{prefix}: {intro}")
+                        emit(f"{prefix}: {intro}")
                     else:
-                        print("世界观为空。")
+                        emit("世界观为空。")
                     continue
                 if command == "/act":
                     if not active_name:
-                        print("未选择角色。")
+                        emit("未选择角色。")
                         continue
                     if not arg:
-                        print("用法: /act <goal>")
+                        emit("用法: /act <goal>")
                         continue
                     agent = agents[active_name]
                     actions = await agent.plan_actions(arg)
                     if actions:
-                        print(f"行动计划已加入队列（{len(actions)}）")
+                        emit(f"行动计划已加入队列（{len(actions)}）")
                     else:
-                        print("未生成可执行行动。")
+                        emit("未生成可执行行动。")
                     continue
                 if command == "/tick":
                     await advance_tick()
                     continue
                 if command == "/save":
-                    path = _save_game_snapshot(agents, arg or None)
-                    print(f"已存档: {path.as_posix()}")
+                    path = _save_game_snapshot(agents, save_dir, arg or None)
+                    emit(f"已存档: {path.as_posix()}")
                     continue
-                print("未知命令。")
+                emit("未知命令。")
                 continue
 
             if active_name is None:
-                print("请先 /use <name>。")
+                emit("请先 /use <name>。")
                 continue
             agent = agents[active_name]
             response = await agent.respond(raw)
-            print(response)
+            emit(response)
     finally:
         await _cleanup()
+        log_path = session_log.path_for(save_dir, world_id)
+        emit(f"运行日志已保存: {log_path.as_posix()}")
+        session_log.save(log_path)
+
+
+async def _run_post_game_dialogue(
+    agents: Dict[str, ChatAgent],
+    session: SurvivalWarSession,
+    emit: Callable[[str], None],
+) -> None:
+    """赛后对话环节。"""
+    emit("比赛结束，进入赛后对话。")
+    summary = session.summary()
+    for agent in agents.values():
+        await agent.memory.add_sensory_input(
+            f"战斗总结: {summary}", force_consolidate=True
+        )
+    names = [npc_id for npc_id in session.npc_ids() if npc_id in agents]
+    if len(names) < 2:
+        emit("参赛者不足，跳过对话。")
+        return
+    topics = ["策略选择", "关键战斗", "复盘改进"]
+    for topic in topics:
+        for idx, speaker in enumerate(names):
+            target = names[(idx + 1) % len(names)]
+            message = f"赛后复盘：{topic}，你怎么看？"
+            emit(f"{speaker} -> {target}: {message}")
+            reply = await agents[target].respond_to_npc(speaker, message)
+            emit(f"{target}: {reply}")
+
+
+async def _run_survival_war_cli(
+    agents: Dict[str, ChatAgent],
+    session: SurvivalWarSession,
+    save_dir: Path,
+    world_id: str,
+    session_log: SessionLog,
+    auto_tick: bool = False,
+    tick_interval: float = 1.0,
+    max_ticks: int = 0,
+) -> None:
+    """生存战争模式 CLI。"""
+    emit = session_log.emit
+    names = [npc_id for npc_id in session.npc_ids() if npc_id in agents]
+    if not names:
+        emit("未配置生存战争 NPC。")
+        return
+    active_name: Optional[str] = None
+    tick_count = 0
+    tick_lock = asyncio.Lock()
+    stop_event = asyncio.Event()
+
+    def _sync_agent_states() -> None:
+        for npc_id in names:
+            snapshot = session.snapshot_state(npc_id)
+            nav_target = agents[npc_id].state.get("nav_target")
+            agents[npc_id].state.update(snapshot)
+            if nav_target and snapshot.get("position") != nav_target:
+                agents[npc_id].state["nav_target"] = nav_target
+            else:
+                agents[npc_id].state.pop("nav_target", None)
+
+    async def advance_tick() -> None:
+        nonlocal tick_count
+        async with tick_lock:
+            if session.game_over:
+                stop_event.set()
+                return
+            if max_ticks > 0 and tick_count >= max_ticks:
+                if auto_tick:
+                    emit(f"已达到最大 tick: {max_ticks}，自动停止。")
+                    stop_event.set()
+                else:
+                    emit(f"已达到最大 tick: {max_ticks}。")
+                return
+            tick_count += 1
+            session.begin_tick()
+            for npc_id in names:
+                npc_state = session.npcs.get(npc_id)
+                if not npc_state or not npc_state.alive:
+                    continue
+                agent = agents[npc_id]
+                placeholders = agent.state.setdefault("placeholders", {})
+                target_id = session.nearest_enemy_id(npc_id)
+                if target_id:
+                    placeholders["target_id"] = target_id
+                    placeholders["npc_id"] = target_id
+                if not agent.pending_actions:
+                    prompt = _build_survival_prompt(agent, session)
+                    memories = agent.memory.retrieve_and_reinforce(
+                        "survival_war_tick", top_k=3
+                    )
+                    memory_texts = [fragment.content for fragment in memories]
+                    context = {
+                        "goal": "survival_war",
+                        "message": prompt,
+                        "state": agent.state,
+                    }
+                    plan = await agent.behavior_llm.generate_actions(
+                        context, memory_texts
+                    )
+                    raw_actions = parse_action_plan(plan)
+                    expanded = _expand_survival_actions(agent, session, raw_actions)
+                    if not expanded:
+                        expanded = [BehaviorAction(name="wait", params={"ticks": 1})]
+                    agent.pending_actions = expanded
+                action, result = await agent._execute_next_action()
+                if not result.success:
+                    agent.pending_actions.clear()
+                signature = _format_action_signature(action)
+                summary = agent._format_action_result(action, result)
+                emit(f"[Tick {tick_count}] {agent.name} 行动: {signature} | {summary}")
+            session.end_tick()
+            _sync_agent_states()
+            if session.game_over:
+                await _run_post_game_dialogue(agents, session, emit)
+                stop_event.set()
+
+    async def auto_tick_loop() -> None:
+        while not stop_event.is_set():
+            await advance_tick()
+            if tick_interval > 0:
+                await asyncio.sleep(tick_interval)
+
+    auto_task = None
+    if auto_tick:
+        auto_task = asyncio.create_task(auto_tick_loop())
+
+    emit("生存战争模式已启动。输入 /help 查看命令。")
+    for npc_id in names:
+        agent = agents[npc_id]
+        agent.action_executor = _execute_survival_action
+        agent.action_context = {"session": session, "npc_id": npc_id}
+    _sync_agent_states()
+
+    async def _cleanup() -> None:
+        stop_event.set()
+        if auto_task:
+            auto_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await auto_task
+
+    if auto_tick:
+        emit("自动 tick 模式已启动，不接收命令行指令。按 Ctrl+C 退出。")
+        try:
+            await stop_event.wait()
+        finally:
+            await _cleanup()
+        log_path = session_log.path_for(save_dir, world_id)
+        emit(f"运行日志已保存: {log_path.as_posix()}")
+        session_log.save(log_path)
+        return
+
+    try:
+        while True:
+            prompt_label = f"[{active_name}]> " if active_name else "> "
+            try:
+                raw = (await _prompt(prompt_label)).strip()
+            except EOFError:
+                    emit("检测到输入结束，退出交互模式。")
+                    break
+            if not raw:
+                continue
+            if raw.startswith("/"):
+                parts = raw.split(maxsplit=1)
+                command = parts[0]
+                arg = parts[1].strip() if len(parts) > 1 else ""
+                if command == "/quit":
+                    emit("已退出。")
+                    break
+                if command == "/exit":
+                    if active_name is None:
+                        emit("未在对话中。")
+                    else:
+                        active_name = None
+                    continue
+                if command == "/help":
+                    emit(HELP_TEXT)
+                    continue
+                if command == "/list":
+                    emit(", ".join(names))
+                    continue
+                if command == "/use":
+                    if not arg:
+                        emit("用法: /use <name>")
+                        continue
+                    if arg in agents:
+                        active_name = arg
+                    else:
+                        emit(f"未知角色: {arg}")
+                    continue
+                if command == "/state":
+                    target = arg or active_name
+                    if not target:
+                        emit("未选择角色。")
+                        continue
+                    agent = agents.get(target)
+                    if not agent:
+                        emit(f"未知角色: {target}")
+                        continue
+                    prefix = "状态" if target == active_name else f"{agent.name} 状态"
+                    emit(f"{prefix}: {_format_state(agent.state)}")
+                    continue
+                if command == "/lore":
+                    target = arg or active_name
+                    if not target:
+                        emit("未选择角色。")
+                        continue
+                    agent = agents.get(target)
+                    if not agent:
+                        emit(f"未知角色: {target}")
+                        continue
+                    intro = agent.worldview.intro()
+                    if intro:
+                        prefix = "世界观" if target == active_name else f"{agent.name} 世界观"
+                        emit(f"{prefix}: {intro}")
+                    else:
+                        emit("世界观为空。")
+                    continue
+                if command == "/act":
+                    emit("生存战争模式不支持 /act。")
+                    continue
+                if command == "/tick":
+                    await advance_tick()
+                    if session.game_over:
+                        break
+                    continue
+                if command == "/save":
+                    path = _save_game_snapshot(agents, save_dir, arg or None)
+                    emit(f"已存档: {path.as_posix()}")
+                    continue
+                emit("未知命令。")
+                continue
+
+            if active_name is None:
+                emit("请先 /use <name>。")
+                continue
+            agent = agents[active_name]
+            response = await agent.respond(raw)
+            emit(response)
+    finally:
+        await _cleanup()
+        log_path = session_log.path_for(save_dir, world_id)
+        emit(f"运行日志已保存: {log_path.as_posix()}")
+        session_log.save(log_path)
 
 
 async def _run_demo(agents: Dict[str, ChatAgent], run_seconds: int) -> None:
@@ -792,10 +1463,11 @@ async def main_async(args: argparse.Namespace) -> None:
     logger = logging.getLogger("alicization")
 
     app_config = _load_app_config(args.app_config_path)
-    knowledge_path = app_config.get("knowledge_path", "data/knowledge_graph.json")
-    worldview_path = app_config.get("worldview_path", "data/world_lore.json")
     llm_config_path = app_config.get("llm_config_path", "data/llm_config.json")
-    persona_path = app_config.get("persona_path", "data/personas/default.json")
+    world_context = _resolve_world_context(app_config, args, logger)
+    knowledge_path = world_context.knowledge_path
+    worldview_path = world_context.worldview_path
+    persona_path = world_context.persona_path
 
     persona = _load_config(persona_path)
     llm_config = _load_config(llm_config_path)
@@ -806,6 +1478,9 @@ async def main_async(args: argparse.Namespace) -> None:
     worldview = _load_worldview(worldview_path, logger)
 
     agent_names = _resolve_agent_names(app_config.get("agents"))
+    agent_names = _resolve_agent_names_from_world_config(
+        world_context.world_config, agent_names
+    )
     agents = _build_agents(
         agent_names=agent_names,
         persona=persona,
@@ -815,6 +1490,8 @@ async def main_async(args: argparse.Namespace) -> None:
         memory_llm=memory_llm,
         intent_llm=intent_llm,
         embed_api=llm_group.embed_api,
+        memory_dir=world_context.memory_dir,
+        knowledge_dir=world_context.knowledge_dir,
     )
 
     memory_test = bool(app_config.get("memory_test", False))
@@ -847,12 +1524,32 @@ async def main_async(args: argparse.Namespace) -> None:
     elif run_seconds:
         await _run_demo(agents, int(run_seconds))
     else:
-        await _run_cli(
-            agents,
-            auto_tick=auto_tick,
-            tick_interval=tick_interval,
-            max_ticks=max_ticks,
-        )
+        if world_context.world_mode == "survival_war":
+            session = SurvivalWarSession.from_config(
+                world_context.world_config,
+                base_dir=world_context.base_dir,
+                logger=logger,
+            )
+            await _run_survival_war_cli(
+                agents,
+                session,
+                save_dir=world_context.save_dir,
+                world_id=world_context.world_id,
+                session_log=SessionLog(),
+                auto_tick=auto_tick,
+                tick_interval=tick_interval,
+                max_ticks=max_ticks,
+            )
+        else:
+            await _run_cli(
+                agents,
+                save_dir=world_context.save_dir,
+                world_id=world_context.world_id,
+                session_log=SessionLog(),
+                auto_tick=auto_tick,
+                tick_interval=tick_interval,
+                max_ticks=max_ticks,
+            )
 
 
 def parse_args() -> argparse.Namespace:
@@ -906,6 +1603,21 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Override Web UI port",
+    )
+    parser.add_argument(
+        "--world-id",
+        default=None,
+        help="World ID under the worlds directory",
+    )
+    parser.add_argument(
+        "--worlds-dir",
+        default=None,
+        help="Base directory for world definitions",
+    )
+    parser.add_argument(
+        "--world-config-path",
+        default=None,
+        help="Override world config path",
     )
     return parser.parse_args()
 

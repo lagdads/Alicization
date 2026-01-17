@@ -1,0 +1,3 @@
+world_mode = "default"
+worldview_path = "world_lore.toml"
+persona_path = "personas/default.toml"

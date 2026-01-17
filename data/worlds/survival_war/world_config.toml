@@ -1,0 +1,59 @@
+world_mode = "survival_war"
+worldview_path = "world_lore.toml"
+persona_path = "personas/default.toml"
+
+[map]
+width = 9
+height = 9
+
+[spawn]
+max_weapons = 3
+spawn_interval_ticks = 2
+spawn_chance = 0.7
+seed = 42
+
+[combat]
+base_damage = 1
+observe_radius = 3
+
+[[weapons]]
+id = "knife"
+name = "Knife"
+damage = 2
+range = 1
+required_level = 1
+
+[[weapons]]
+id = "spear"
+name = "Spear"
+damage = 2
+range = 2
+required_level = 1
+
+[[weapons]]
+id = "bow"
+name = "Bow"
+damage = 1
+range = 3
+required_level = 1
+
+[[npcs]]
+id = "NPC-1"
+name = "NPC-1"
+destiny = 10
+holder_level = 1
+position = { x = -2, y = 0 }
+
+[[npcs]]
+id = "NPC-2"
+name = "NPC-2"
+destiny = 10
+holder_level = 1
+position = { x = 2, y = 0 }
+
+[[npcs]]
+id = "NPC-3"
+name = "NPC-3"
+destiny = 10
+holder_level = 1
+position = { x = 0, y = 2 }

@@ -1,0 +1,18 @@
+title = "生存战争世界观"
+summary = "三名战士被投放到封闭战场，靠随机刷新武器与有限资源争夺生存。唯一目标是击败其他 NPC 成为最后的胜者。"
+
+[summary_by_visibility]
+npc = "三名战士被投放到封闭战场，靠随机刷新武器与有限资源争夺生存。唯一目标是击败其他 NPC 成为最后的胜者。"
+meta = "生存战争用于验证 NPC 的决策与生存策略，地图与武器刷新由系统控制。"
+
+[[entries]]
+id = "battle_rules"
+tags = ["规则", "胜利条件", "战斗"]
+visibility = "npc"
+content = "战场中武器会随机出现，战士需依靠武器与判断击败对手。存活到最后即为胜者。"
+
+[[entries]]
+id = "system_notes"
+tags = ["系统", "刷新", "观察"]
+visibility = "meta"
+content = "系统会按规则刷新武器，并允许 NPC 观察附近其他 NPC 的状态。"

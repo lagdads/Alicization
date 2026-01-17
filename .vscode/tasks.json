@@ -2,30 +2,30 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Alicization: Run CLI (interactive)",
+      "label": "Alicization: Run Underworld",
       "type": "shell",
       "command": "python",
-      "args": ["main.py"],
+      "args": ["main.py", "--world-id", "underworld"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
       "problemMatcher": []
     },
     {
-      "label": "Alicization: Run CLI (auto tick)",
+      "label": "Alicization: Run Survival War",
       "type": "shell",
       "command": "python",
-      "args": ["main.py"],
+      "args": ["main.py", "--world-id", "survival_war"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
       "problemMatcher": []
     },
     {
-      "label": "Alicization: Run Web UI (default)",
+      "label": "Alicization: Run Web UI",
       "type": "shell",
       "command": "python",
-      "args": ["main.py"],
+      "args": ["main.py", "--webui"],
       "options": {
         "cwd": "${workspaceFolder}"
       },

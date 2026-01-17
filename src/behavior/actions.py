@@ -25,15 +25,25 @@ class ActionResult:
     info: Optional[Dict[str, Any]] = None
 
 
-ALLOWED_ACTIONS: Dict[str, Tuple[str, ...]] = {
+HIGH_LEVEL_ACTIONS: Dict[str, Tuple[str, ...]] = {
     "move_to": ("x", "y"),
-    "scan_nearby": ("tag",),
+    "observe_nearby_npcs": ("radius",),
     "find_item": ("item_type",),
-    "pickup": ("object_id",),
     "attack": ("target_id",),
     "talk": ("target_id", "topic"),
     "gather": ("resource_id",),
     "wait": ("ticks",),
+}
+
+LOW_LEVEL_ACTIONS: Dict[str, Tuple[str, ...]] = {
+    "move": ("dx", "dy"),
+    "scan_nearby": ("tag",),
+    "pickup": ("object_id",),
+}
+
+ALLOWED_ACTIONS: Dict[str, Tuple[str, ...]] = {
+    **HIGH_LEVEL_ACTIONS,
+    **LOW_LEVEL_ACTIONS,
 }
 
 
@@ -42,9 +52,19 @@ def move_to(x: int, y: int) -> Action:
     return Action(name="move_to", params={"x": x, "y": y})
 
 
+def move(dx: int, dy: int) -> Action:
+    """按单位步长移动。"""
+    return Action(name="move", params={"dx": dx, "dy": dy})
+
+
 def scan_nearby(tag: str) -> Action:
     """扫描附近对象标签。"""
     return Action(name="scan_nearby", params={"tag": tag})
+
+
+def observe_nearby_npcs(radius: int) -> Action:
+    """观察附近 NPC 状态。"""
+    return Action(name="observe_nearby_npcs", params={"radius": radius})
 
 
 def find_item(item_type: str) -> Action:
@@ -77,7 +97,9 @@ def wait(ticks: int) -> Action:
     return Action(name="wait", params={"ticks": ticks})
 
 
-def parse_action_signature(signature: str) -> Optional[Action]:
+def parse_action_signature(
+    signature: str, allowed_actions: Optional[Dict[str, Tuple[str, ...]]] = None
+) -> Optional[Action]:
     """解析动作函数签名字符串。"""
     if not signature:
         return None
@@ -85,8 +107,9 @@ def parse_action_signature(signature: str) -> Optional[Action]:
     if not match:
         return None
     name = match.group(1)
+    allowed = allowed_actions or HIGH_LEVEL_ACTIONS
     params_raw = match.group(2)
-    if name not in ALLOWED_ACTIONS:
+    if name not in allowed:
         return None
     params: Dict[str, Any] = {}
     if params_raw:
@@ -97,13 +120,16 @@ def parse_action_signature(signature: str) -> Optional[Action]:
                 return None
             key, raw_value = segment.split("=", 1)
             key = key.strip()
-            if key not in ALLOWED_ACTIONS[name]:
+            if key not in allowed[name]:
                 return None
             params[key] = _parse_value(raw_value.strip())
     return Action(name=name, params=params)
 
 
-def parse_action_plan(plan: Dict[str, Any]) -> List[Action]:
+def parse_action_plan(
+    plan: Dict[str, Any],
+    allowed_actions: Optional[Dict[str, Tuple[str, ...]]] = None,
+) -> List[Action]:
     """解析 LLM 返回的动作计划。"""
     if not isinstance(plan, dict):
         return []
@@ -114,10 +140,102 @@ def parse_action_plan(plan: Dict[str, Any]) -> List[Action]:
     for entry in raw_actions:
         if not isinstance(entry, str):
             continue
-        action = parse_action_signature(entry)
+        action = parse_action_signature(entry, allowed_actions=allowed_actions)
         if action:
             actions.append(action)
     return actions
+
+
+def expand_action_chain(actions: List[Action], state: Dict[str, Any]) -> List[Action]:
+    """将高层动作拆解为 tick 级行动链。"""
+    expanded: List[Action] = []
+    position = state.get("position") or {}
+    current_x = int(position.get("x", 0))
+    current_y = int(position.get("y", 0))
+    for action in actions:
+        params = _resolve_placeholders(action.params, state)
+        if action.name == "move_to":
+            target_x = int(params.get("x", 0))
+            target_y = int(params.get("y", 0))
+            state["nav_target"] = {"x": target_x, "y": target_y}
+            expanded.extend(_expand_grid_path((current_x, current_y), (target_x, target_y)))
+            current_x, current_y = target_x, target_y
+            continue
+        if action.name == "find_item":
+            item_type = str(params.get("item_type", "item"))
+            expanded.append(Action(name="scan_nearby", params={"tag": item_type}))
+            expanded.append(Action(name="move", params={"dx": 1, "dy": 0}))
+            current_x += 1
+            expanded.append(Action(name="scan_nearby", params={"tag": item_type}))
+            expanded.append(Action(name="find_item", params={"item_type": item_type}))
+            expanded.append(
+                Action(name="pickup", params={"object_id": f"${item_type}_id"})
+            )
+            continue
+        if action.name == "attack":
+            target_pos = state.get("target_position")
+            if isinstance(target_pos, dict):
+                target_x = int(target_pos.get("x", current_x))
+                target_y = int(target_pos.get("y", current_y))
+                distance = abs(current_x - target_x) + abs(current_y - target_y)
+                if distance > 1:
+                    steps = _expand_grid_path(
+                        (current_x, current_y),
+                        (target_x, target_y),
+                        stop_distance=1,
+                    )
+                    if steps:
+                        expanded.extend(steps)
+                        current_x, current_y = _apply_step_updates(
+                            (current_x, current_y), steps
+                        )
+            expanded.append(Action(name="attack", params=params))
+            continue
+        expanded.append(Action(name=action.name, params=params))
+    return expanded
+
+
+def _expand_grid_path(
+    start: tuple[int, int],
+    target: tuple[int, int],
+    stop_distance: int = 0,
+) -> List[Action]:
+    """将网格路径拆解为 move 动作序列。"""
+    actions: List[Action] = []
+    current_x, current_y = start
+    target_x, target_y = target
+    max_steps = abs(target_x - current_x) + abs(target_y - current_y)
+    for _ in range(max_steps):
+        distance = abs(current_x - target_x) + abs(current_y - target_y)
+        if distance <= stop_distance:
+            break
+        dx = 0
+        dy = 0
+        if current_x < target_x:
+            dx = 1
+        elif current_x > target_x:
+            dx = -1
+        elif current_y < target_y:
+            dy = 1
+        elif current_y > target_y:
+            dy = -1
+        if dx == 0 and dy == 0:
+            break
+        actions.append(Action(name="move", params={"dx": dx, "dy": dy}))
+        current_x += dx
+        current_y += dy
+    return actions
+
+
+def _apply_step_updates(
+    start: tuple[int, int], steps: List[Action]
+) -> tuple[int, int]:
+    """将 move 动作叠加到坐标。"""
+    current_x, current_y = start
+    for step in steps:
+        current_x += int(step.params.get("dx", 0))
+        current_y += int(step.params.get("dy", 0))
+    return current_x, current_y
 
 
 def execute_action(action: Action, state: Dict[str, Any]) -> ActionResult:
@@ -127,11 +245,26 @@ def execute_action(action: Action, state: Dict[str, Any]) -> ActionResult:
         position = {"x": int(params.get("x", 0)), "y": int(params.get("y", 0))}
         state["position"] = position
         return ActionResult(True, {"position": position})
+    if action.name == "move":
+        dx = int(params.get("dx", 0))
+        dy = int(params.get("dy", 0))
+        position = state.get("position") or {"x": 0, "y": 0}
+        new_position = {
+            "x": int(position.get("x", 0)) + dx,
+            "y": int(position.get("y", 0)) + dy,
+        }
+        state["position"] = new_position
+        return ActionResult(True, {"position": new_position})
     if action.name == "scan_nearby":
         tag = str(params.get("tag", "unknown"))
         info = f"扫描到附近的 {tag}"
         state["last_scan"] = tag
         return ActionResult(True, {"observation": info})
+    if action.name == "observe_nearby_npcs":
+        radius = int(params.get("radius", 3))
+        info = f"观察附近 {radius} 格 NPC"
+        state["last_observation"] = {"radius": radius}
+        return ActionResult(True, {"observation": info, "radius": radius})
     if action.name == "find_item":
         item_type = str(params.get("item_type", "item"))
         found_id = f"{item_type}_001"

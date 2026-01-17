@@ -59,9 +59,9 @@ ECS 变体基础容器：Entity 仅负责组件的存取管理，具体行为由
 ### EventBus
 
 ```
-publish(event_type: str, data: dict) -> None
-subscribe(event_type: str, handler: Callable[[Event], Any]) -> None
-wait_for_event(event_type: Optional[str], timeout: Optional[float]) -> Optional[Event]
+async publish(event_type: str, data: dict) -> None
+async subscribe(event_type: str, handler: Callable[[Event], Any]) -> None
+async wait_for_event(event_type: Optional[str], timeout: Optional[float]) -> Optional[Event]
 ```
 
 ### WorldLoop
@@ -69,6 +69,6 @@ wait_for_event(event_type: Optional[str], timeout: Optional[float]) -> Optional[
 ```
 register_fast_task(task: Callable[[], Awaitable[None]]) -> None
 register_slow_task(task: Callable[[Optional[Event]], Awaitable[None]]) -> None
-run() -> None
+async run() -> None
 stop() -> None
 ```

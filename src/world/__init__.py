@@ -12,6 +12,7 @@ from src.world.object import (
     Object,
     Position,
 )
+from src.world.survival_war import SurvivalWarSession
 
 __all__ = [
     "AccessPermission",
@@ -24,4 +25,5 @@ __all__ = [
     "Position",
     "SEA",
     "WorldMap",
+    "SurvivalWarSession",
 ]

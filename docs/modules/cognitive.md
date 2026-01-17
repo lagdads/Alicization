@@ -53,9 +53,11 @@ Core Persona (Key-Value，免疫所有 GC)
 
 #### 记忆持久化 (Long-term Storage)
 
-- 对话记录（第一层）：`data/memory/<safe-name>/<safe-name>.log.jsonl`
-- 情节记忆向量库（第二层）：`data/memory/<safe-name>/<safe-name>.episodic.chroma/`
-- 核心人格快照（第三层）：`data/memory/<safe-name>/<safe-name>.core.json`
+- 对话记录（第一层）：`data/worlds/<world_id>/memory/<safe-name>/<safe-name>.log.jsonl`
+- 情节记忆向量库（第二层）：`data/worlds/<world_id>/memory/<safe-name>/<safe-name>.episodic.chroma/`
+- 核心人格快照（第三层）：`data/worlds/<world_id>/memory/<safe-name>/<safe-name>.core.json`
+- Git 版本管理：仅保留 `*.core.json`；对话记录/向量库属于运行产物，默认不纳入版本库
+- 未指定 `world_id` 时，回退到 `data/memory/` 与 `data/knowledge/` 路径
 - 启动时加载 Core Persona；Episodic 与对话记录由各自文件维护
 - 记忆变更后自动写回（对话追加写入，Episodic 写入向量库，Core Persona 更新快照）
 - 人设文件内容会写入 Core Persona 的 `persona_profile`，作为永久记忆的一部分
@@ -106,10 +108,10 @@ LLM 摘要和评分
 
 ### 与世界/行为层交互
 
-- 世界层在每个 tick 汇总感知事件与行动结果，写入 Sensory Buffer
+- 当前由 `main.py` 在对话与行动结果处写入 Sensory Buffer
 - 行为层在生成目标与对话时，调用记忆检索与世界观匹配
 - 访问/持有权限由世界层或行为层裁定，认知层仅提供建议与文本
-- 日终事件可触发 Major GC 与记忆二层整理机制
+- 日终事件会触发 Major GC 与记忆二层整理机制（CLI 已接入）
 
 建议事件结构：
 
@@ -134,7 +136,7 @@ ActionResult = {
 ### 知识系统：树形访问控制 (KnowledgeBase)
 
 ```
-Knowledge Tree (JSON)
+Knowledge Tree (TOML/JSON)
     ↓
 ChromaDB Index (Vector)
     ↓
@@ -147,12 +149,12 @@ learn(topic)
   └─ 前置满足 → 解锁并返回 True
 ```
 
-知识向量库位置：`data/knowledge/<safe-name>-<hash>.chroma/`
+知识向量库位置：`data/worlds/<world_id>/knowledge/<safe-name>-<hash>.chroma/`
 
 ### 世界观知识层 (WorldviewKnowledge)
 
 ```
-Worldview JSON
+Worldview TOML/JSON
     ↓
 match_entry(text)
     ↓
@@ -190,8 +192,7 @@ LLM 输出为 JSON，包含 `actions` 列表。每个动作必须是可直接调
 {
   "goal": "获得武器",
   "actions": [
-    "find_item(item_type=\"weapon\")",
-    "pickup(object_id=\"$weapon_id\")"
+    "find_item(item_type=\"weapon\")"
   ]
 }
 ```
@@ -214,9 +215,8 @@ LLM 输出为 JSON，包含 `actions` 列表。每个动作必须是可直接调
 
 动作格式必须为函数签名字符串，例如：
 move_to(x=0, y=0)
-scan_nearby(tag="weapon")
+observe_nearby_npcs(radius=3)
 find_item(item_type="weapon")
-pickup(object_id="$weapon_id")
 talk(target_id="$npc_id", topic="trade")
 ```
 
@@ -226,9 +226,8 @@ LLM 仅能输出以下函数签名；参数名必须精确匹配：
 
 ```
 move_to(x: int, y: int)
-scan_nearby(tag: str)
+observe_nearby_npcs(radius: int)
 find_item(item_type: str)
-pickup(object_id: str)
 attack(target_id: str)
 talk(target_id: str, topic: str)
 gather(resource_id: str)
@@ -236,8 +235,10 @@ wait(ticks: int)
 ```
 
 备注：
-- `find_item` 为高层动作，行为层可拆解为 `move_to` + `scan_nearby`
-- `object_id`、`target_id` 允许使用占位符（例如 `$weapon_id`），由行为层解析
+- `move_to` 为高层动作，执行侧会自动拆解为连续 `move`
+- `find_item` 为高层动作，执行侧可拆解为扫描/移动/拾取的行动链
+- 低层动作（如 `move`/`scan_nearby`/`pickup`）由执行侧生成，LLM 不直接输出
+- `target_id` 允许使用占位符（例如 `$enemy_id`），由行为层解析
 
 ### LLM 分组配置
 
